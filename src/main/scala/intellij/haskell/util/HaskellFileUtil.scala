@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,17 +17,22 @@
 package intellij.haskell.util
 
 import java.io.{File, FileOutputStream, InputStream}
+import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.{Files, Paths}
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.CommandProcessor
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.module.Module
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.{LocalFileSystem, VirtualFile, VirtualFileManager}
 import com.intellij.psi.{PsiDocumentManager, PsiFile, PsiManager}
-import intellij.haskell.HaskellFile
 import intellij.haskell.action.SelectionContext
+import intellij.haskell.{HaskellFile, HaskellFileType}
 
 object HaskellFileUtil {
 
@@ -41,9 +46,12 @@ object HaskellFileUtil {
     )
   }
 
-  def saveFile(psiFile: PsiFile): Unit = {
+  def saveFile(psiFile: PsiFile, checkCancelled: Boolean): Unit = {
     findDocument(psiFile).foreach(d => {
       PsiDocumentManager.getInstance(psiFile.getProject).doPostponedOperationsAndUnblockDocument(d)
+      if (checkCancelled) {
+        ProgressManager.checkCanceled()
+      }
       FileDocumentManager.getInstance.saveDocument(d)
     })
   }
@@ -54,26 +62,38 @@ object HaskellFileUtil {
 
   def findDocument(virtualFile: VirtualFile): Option[Document] = {
     val fileDocumentManager = FileDocumentManager.getInstance()
-    Option(fileDocumentManager.getDocument(virtualFile))
+    Option(ApplicationUtil.runReadAction(fileDocumentManager.getDocument(virtualFile)))
   }
 
   def findDocument(psiFile: PsiFile): Option[Document] = {
-    findVirtualFile(psiFile).flatMap(findDocument)
+    findVirtualFile(psiFile).flatMap(vf => findDocument(vf))
   }
 
-  def getAbsoluteFilePath(psiFile: PsiFile): String = {
-    new File(psiFile.getOriginalFile.getVirtualFile.getPath).getAbsolutePath
+  def getAbsolutePath(psiFile: PsiFile): Option[String] = {
+    Option(psiFile.getOriginalFile.getVirtualFile) match {
+      case Some(vf) => Some(getAbsolutePath(vf))
+      case None => None
+    }
   }
 
-  def getAbsoluteFilePath(virtualFile: VirtualFile): String = {
-    new File(virtualFile.getPath).getAbsolutePath
+  def getAbsolutePath(virtualFile: VirtualFile): String = {
+    Paths.get(virtualFile.getPath).toAbsolutePath.normalize().toString
   }
 
   def makeFilePathAbsolute(filePath: String, project: Project): String = {
-    if (new File(filePath).isAbsolute)
-      filePath
+    makeFilePathAbsolute(filePath, project.getBasePath)
+  }
+
+  def makeFilePathAbsolute(filePath: String, module: Module): String = {
+    makeFilePathAbsolute(filePath, HaskellProjectUtil.getModuleDir(module).getAbsolutePath)
+  }
+
+  def makeFilePathAbsolute(filePath: String, parentFilePath: String): String = {
+    val path = Paths.get(filePath)
+    if (path.isAbsolute)
+      path.normalize().toString
     else
-      new File(project.getBasePath, filePath).getAbsolutePath
+      Paths.get(parentFilePath, filePath).toAbsolutePath.normalize().toString
   }
 
   def convertToHaskellFiles(project: Project, virtualFiles: Iterable[VirtualFile]): Iterable[HaskellFile] = {
@@ -136,6 +156,20 @@ object HaskellFileUtil {
     file
   }
 
+  def isHaskellFile(psiFile: PsiFile): Boolean = {
+    isHaskellFileName(psiFile.getName)
+  }
+
+  def isHaskellFile(virtualFile: VirtualFile): Boolean = {
+    isHaskellFileName(virtualFile.getName)
+  }
+
+  private final val HaskellFileSuffix = "." + HaskellFileType.HaskellFileExtension
+
+  private def isHaskellFileName(name: String) = {
+    name.endsWith(HaskellFileSuffix)
+  }
+
   def getFileNameWithoutExtension(psiFile: PsiFile): String = {
     val name = psiFile.getName
     removeFileExtension(name)
@@ -152,5 +186,30 @@ object HaskellFileUtil {
 
   def getUrlByPath(absolutePath: String): String = {
     VirtualFileManager.constructUrl(LocalFileSystem.getInstance.getProtocol, absolutePath)
+  }
+
+  def createDirectoryIfNotExists(directory: File, onlyWriteableByOwner: Boolean): Unit = {
+    if (!directory.exists()) {
+      val result = FileUtil.createDirectory(directory)
+      if (!result) {
+        throw new RuntimeException(s"Could not create directory `${directory.getAbsolutePath}`")
+      }
+      if (onlyWriteableByOwner) {
+        directory.setWritable(true, true)
+        removeGroupWritePermission(directory)
+      }
+    }
+  }
+
+  // On Linux setting `directory.setWritable(true, true)` does not guarantee that group has NO write permissions
+  def removeGroupWritePermission(path: File): Unit = {
+    if (!SystemInfo.isWindows) {
+      val directoryPath = Paths.get(path.getAbsolutePath)
+      val permissions = Files.getPosixFilePermissions(directoryPath)
+      if (permissions.contains(PosixFilePermission.GROUP_WRITE)) {
+        permissions.remove(PosixFilePermission.GROUP_WRITE)
+        Files.setPosixFilePermissions(directoryPath, permissions)
+      }
+    }
   }
 }

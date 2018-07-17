@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,9 +48,9 @@ public class HaskellSettingsPersistentStateComponent implements PersistentStateC
     }
 
     static class HaskellSettingsState {
-        public String hindentPath = "";
-        public String stylishHaskellPath = "";
         public Integer replTimeout = 5;
         public String hlintOptions = "";
+        public Boolean reformatCodeBeforeCommit = false;
+        public Boolean optimizeImportsBeforeCommit = false;
     }
 }

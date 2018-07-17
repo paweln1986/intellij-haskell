@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,28 +20,41 @@ import java.util.concurrent.ConcurrentHashMap
 
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
-import intellij.haskell.external.repl.StackRepl.{StackReplOutput, StanzaType}
+import intellij.haskell.HaskellNotificationGroup
+import intellij.haskell.external.repl.StackRepl.StackReplOutput
+import intellij.haskell.external.repl.StackReplsManager.StackComponentInfo
 import intellij.haskell.util.HaskellFileUtil
 
 import scala.collection.JavaConverters._
 
-class ProjectStackRepl(project: Project, replType: StanzaType, target: String, var sourceDirs: Seq[String], replTimeout: Int) extends StackRepl(project, Some(replType), Some(target), Seq(), replTimeout: Int) {
+class ProjectStackRepl(project: Project, stackComponentInfo: StackComponentInfo, replTimeout: Int) extends StackRepl(project, Some(stackComponentInfo), Seq(), replTimeout: Int) {
 
   import intellij.haskell.external.repl.ProjectStackRepl._
 
-  def clearLoadedInfo(): Unit = {
-    loadedPsiFileInfo = None
-    allLoadedPsiFileInfos.clear()
+  val target: String = stackComponentInfo.target
+
+  val stanzaType: StackRepl.StanzaType = stackComponentInfo.stanzaType
+
+  val packageName: String = stackComponentInfo.packageName
+
+  def clearLoadedModules(): Unit = {
+    loadedModule = None
+    loadedDependentModules.clear()
   }
 
-  private case class PsiFileInfo(psiFile: PsiFile, loadFailed: Boolean)
+  def clearLoadedModule(): Unit = {
+    loadedModule = None
+  }
+
+  private case class ModuleInfo(psiFile: PsiFile, loadFailed: Boolean)
 
   @volatile
-  private[this] var loadedPsiFileInfo: Option[PsiFileInfo] = None
+  private[this] var loadedModule: Option[ModuleInfo] = None
 
-  private case class FileInfo(loadFailed: Boolean)
+  private case class DependentModuleInfo(loadFailed: Boolean)
 
-  private[this] val allLoadedPsiFileInfos = new ConcurrentHashMap[PsiFile, FileInfo]().asScala
+  private type ModuleName = String
+  private[this] val loadedDependentModules = new ConcurrentHashMap[ModuleName, DependentModuleInfo]().asScala
 
   @volatile
   private var busy = false
@@ -50,22 +63,26 @@ class ProjectStackRepl(project: Project, replType: StanzaType, target: String, v
     busy
   }
 
-  def findTypeInfoFor(psiFile: PsiFile, startLineNr: Int, startColumnNr: Int, endLineNr: Int, endColumnNr: Int, expression: String): Option[StackReplOutput] = {
-    val filePath = HaskellFileUtil.getAbsoluteFilePath(psiFile)
-    findInfoForCommand(psiFile, s":type-at $filePath $startLineNr $startColumnNr $endLineNr $endColumnNr $expression")
+  def findTypeInfo(moduleName: Option[String], psiFile: PsiFile, startLineNr: Int, startColumnNr: Int, endLineNr: Int, endColumnNr: Int, expression: String): Option[StackReplOutput] = {
+    val filePath = getFilePath(psiFile)
+    findInfoForCommand(moduleName, psiFile, s":type-at $filePath $startLineNr $startColumnNr $endLineNr $endColumnNr $expression", setBusy = false)
   }
 
-  def findLocationInfoFor(psiFile: PsiFile, startLineNr: Int, startColumnNr: Int, endLineNr: Int, endColumnNr: Int, expression: String): Option[StackReplOutput] = {
-    val filePath = HaskellFileUtil.getAbsoluteFilePath(psiFile)
-    findInfoForCommand(psiFile, s":loc-at $filePath $startLineNr $startColumnNr $endLineNr $endColumnNr $expression")
+  def findLocationInfo(moduleName: Option[String], psiFile: PsiFile, startLineNr: Int, startColumnNr: Int, endLineNr: Int, endColumnNr: Int, expression: String): Option[StackReplOutput] = {
+    val filePath = getFilePath(psiFile)
+    findInfoForCommand(moduleName, psiFile, s":loc-at $filePath $startLineNr $startColumnNr $endLineNr $endColumnNr $expression", setBusy = false)
   }
 
   def findInfo(psiFile: PsiFile, name: String): Option[StackReplOutput] = {
     executeWithLoad(psiFile, s":info $name")
   }
 
-  def isLoaded(psiFile: PsiFile): IsFileLoaded = {
-    loadedPsiFileInfo match {
+  def isModuleLoaded(moduleName: String): Boolean = {
+    loadedDependentModules.get(moduleName).isDefined
+  }
+
+  def isFileLoaded(psiFile: PsiFile): IsFileLoaded = {
+    loadedModule match {
       case Some(info) if psiFile == info.psiFile && !info.loadFailed => Loaded
       case Some(info) if psiFile == info.psiFile && info.loadFailed => Failed
       case Some(_) => OtherFileIsLoaded
@@ -73,45 +90,77 @@ class ProjectStackRepl(project: Project, replType: StanzaType, target: String, v
     }
   }
 
+  private final val OkModulesLoaded = "Ok, modules loaded: "
+
   def load(psiFile: PsiFile): Option[(StackReplOutput, Boolean)] = {
     val filePath = getFilePath(psiFile)
-    this.synchronized {
-      val output = executeWithSettingBusy(s":load $filePath")
+    synchronized {
+      val loaded = isFileLoaded(psiFile)
+      val reload = loaded == Loaded || loaded == Failed
+      val output = if (reload) {
+        HaskellNotificationGroup.logInfoEvent(project, s"Reload of $filePath")
+        executeWithSettingBusy(Seq(s":reload"), load = Some(psiFile))
+      } else {
+        executeWithSettingBusy(Seq(s":load $filePath"), load = Some(psiFile))
+      }
       output match {
         case Some(o) =>
           val loadFailed = isLoadFailed(o)
-          loadedPsiFileInfo = Some(PsiFileInfo(psiFile, loadFailed))
-          allLoadedPsiFileInfos.put(psiFile, FileInfo(loadFailed))
+          val loadedModuleNames = o.stdoutLines.find(l => l.startsWith(OkModulesLoaded)).map(findLoadedModuleNames).getOrElse(Array())
+          loadedModuleNames.foreach(mn => loadedDependentModules.put(mn, DependentModuleInfo(loadFailed)))
+
+          loadedModule = Some(ModuleInfo(psiFile, loadFailed))
           Some(o, loadFailed)
         case _ =>
-          loadedPsiFileInfo = None
+          loadedDependentModules.clear()
+          loadedModule = None
           None
       }
     }
   }
 
+  private def findLoadedModuleNames(line: String): Array[String] = {
+    if (line == "none") {
+      Array()
+    } else {
+      line.replace(OkModulesLoaded, "").init.split(",").map(_.trim)
+    }
+  }
+
   def getModuleIdentifiers(moduleName: String, psiFile: PsiFile): Option[StackReplOutput] = {
-    findInfoForCommand(psiFile, s":browse! $moduleName")
+    findInfoForCommand(Some(moduleName), psiFile, s":browse! $moduleName", setBusy = true)
   }
 
   def getLocalModuleIdentifiers(moduleName: String, psiFile: PsiFile): Option[StackReplOutput] = {
     executeWithLoad(psiFile, s":browse! *$moduleName", Some(moduleName))
   }
 
+  // To retrieve only library module names, it will first execute `load` to remove all modules from scope
   def findAvailableLibraryModuleNames(project: Project): Option[StackReplOutput] = synchronized {
-    executeWithSettingBusy(":load", """:complete repl "import " """)
+    loadedModule = None
+    executeWithSettingBusy(Seq(":load", """:complete repl "import " """))
   }
 
   def showActiveLanguageFlags: Option[StackReplOutput] = synchronized {
-    executeWithSettingBusy(":show language")
+    executeWithSettingBusy(Seq(":show language"))
   }
 
-  private def findInfoForCommand(psiFile: PsiFile, command: String) = {
-    allLoadedPsiFileInfos.get(psiFile) match {
+  override def restart(forceExit: Boolean): Unit = synchronized {
+    if (available && !starting) {
+      exit(forceExit)
+      clearLoadedModules()
+      start()
+    }
+  }
+
+  private def findInfoForCommand(moduleName: Option[String], psiFile: PsiFile, command: String, setBusy: Boolean): Option[StackReplOutput] = synchronized {
+    moduleName.flatMap(loadedDependentModules.get) match {
       case Some(lf) if lf.loadFailed => Some(StackReplOutput())
       case Some(_) =>
-        this.synchronized {
-          executeWithSettingBusy(command)
+        if (setBusy) {
+          executeWithSettingBusy(Seq(command))
+        } else {
+          executeWithoutSettingBusy(Seq(command))
         }
       case None =>
         executeWithLoad(psiFile, command)
@@ -119,28 +168,30 @@ class ProjectStackRepl(project: Project, replType: StanzaType, target: String, v
   }
 
   private def executeWithLoad(psiFile: PsiFile, command: String, moduleName: Option[String] = None): Option[StackReplOutput] = synchronized {
-    loadedPsiFileInfo match {
-      case Some(info) if info.psiFile == psiFile && !info.loadFailed =>
-        executeWithSettingBusy(command)
+    loadedModule match {
+      case Some(info) if info.psiFile == psiFile && !info.loadFailed => executeWithSettingBusy(Seq(command))
       case Some(info) if info.psiFile == psiFile && info.loadFailed => Some(StackReplOutput())
       case _ =>
         load(psiFile)
-        loadedPsiFileInfo match {
+        loadedModule match {
           case None => None
-          case Some(info) if info.psiFile == psiFile && !info.loadFailed =>
-            executeWithSettingBusy(command)
+          case Some(info) if info.psiFile == psiFile && !info.loadFailed => executeWithSettingBusy(Seq(command))
           case _ => Some(StackReplOutput())
         }
     }
   }
 
-  private def executeWithSettingBusy(commands: String*) = {
+  private def executeWithSettingBusy(commands: Seq[String], load: Option[PsiFile] = None) = {
     try {
       busy = true
-      commands.map(c => execute(c)).lastOption.flatten
+      executeWithoutSettingBusy(commands)
     } finally {
       busy = false
     }
+  }
+
+  private def executeWithoutSettingBusy(commands: Seq[String]) = {
+    commands.map(c => execute(c)).lastOption.flatten
   }
 
   private def isLoadFailed(output: StackReplOutput): Boolean = {
@@ -148,11 +199,14 @@ class ProjectStackRepl(project: Project, replType: StanzaType, target: String, v
   }
 
   private def getFilePath(psiFile: PsiFile): String = {
-    val filePath = HaskellFileUtil.getAbsoluteFilePath(psiFile)
-    if (filePath.contains(" ")) {
-      s""""$filePath""""
-    } else {
-      filePath
+    HaskellFileUtil.getAbsolutePath(psiFile) match {
+      case Some(filePath) =>
+        if (filePath.contains(" ")) {
+          s""""$filePath""""
+        } else {
+          filePath
+        }
+      case None => throw new IllegalStateException(s"Can not load file `${psiFile.getName}` in REPL because it exists only in memory")
     }
   }
 }

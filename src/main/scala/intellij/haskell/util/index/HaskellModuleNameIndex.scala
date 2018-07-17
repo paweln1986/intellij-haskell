@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,21 +45,16 @@ object HaskellModuleNameIndex {
   }
 
   def findHaskellFileByModuleName(project: Project, moduleName: String, searchScope: GlobalSearchScope): Option[HaskellFile] = {
-    val projectFile = if (searchScope.isSearchInLibraries) {
-      findFilesByModuleName(moduleName, GlobalSearchScope.projectScope(project)).headOption
-    } else {
-      None
-    }
-
-    val virtualFile = projectFile.orElse(findFilesByModuleName(moduleName, searchScope).headOption)
+    val virtualFile = findFilesByModuleName(project, moduleName, searchScope).headOption
     virtualFile.flatMap(vf => HaskellFileUtil.convertToHaskellFile(project, vf))
   }
 
   def findHaskellFilesByModuleNameInAllScope(project: Project, moduleName: String): Iterable[HaskellFile] = {
-    HaskellFileUtil.convertToHaskellFiles(project, findFilesByModuleName(moduleName, GlobalSearchScope.allScope(project)))
+    HaskellFileUtil.convertToHaskellFiles(project, findFilesByModuleName(project, moduleName, GlobalSearchScope.allScope(project)))
   }
 
-  private def findFilesByModuleName(moduleName: String, searchScope: GlobalSearchScope): Iterable[VirtualFile] = {
+  // Throws exception when index is not ready
+  private def findFilesByModuleName(project: Project, moduleName: String, searchScope: GlobalSearchScope): Iterable[VirtualFile] = {
     FileBasedIndex.getInstance.getContainingFiles(HaskellModuleNameIndex, moduleName, searchScope).asScala
   }
 }
@@ -74,7 +69,7 @@ class HaskellModuleNameIndex extends ScalaScalarIndexExtension[String] {
 
   override def getKeyDescriptor: KeyDescriptor[String] = HaskellModuleNameIndex.KeyDescriptor
 
-  override def getInputFilter = HaskellModuleNameIndex.HaskellFileFilter
+  override def getInputFilter: FileBasedIndex.InputFilter = HaskellModuleNameIndex.HaskellFileFilter
 
   override def dependsOnFileContent: Boolean = true
 
@@ -84,7 +79,7 @@ class HaskellModuleNameIndex extends ScalaScalarIndexExtension[String] {
 
     override def map(inputData: FileContent): java.util.Map[String, Unit] = {
       val psiFile = inputData.getPsiFile
-      HaskellPsiUtil.findModuleDeclaration(psiFile).map(_.getModid.getName) match {
+      HaskellPsiUtil.findModuleNameInPsiTree(psiFile) match {
         case Some(n) => Collections.singletonMap(n, ())
         case _ => Collections.emptyMap()
       }

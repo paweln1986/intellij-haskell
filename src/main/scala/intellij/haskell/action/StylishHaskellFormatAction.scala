@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,21 +16,20 @@
 
 package intellij.haskell.action
 
-import java.util.concurrent.Callable
-
 import com.intellij.execution.process.ProcessOutput
 import com.intellij.openapi.actionSystem.{AnAction, AnActionEvent}
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
-import intellij.haskell.HaskellNotificationGroup
+import intellij.haskell.external.component.StackProjectManager
 import intellij.haskell.external.execution.CommandLine
-import intellij.haskell.settings.HaskellSettingsState
-import intellij.haskell.util.{HaskellEditorUtil, HaskellFileUtil}
+import intellij.haskell.util.{FutureUtil, HaskellEditorUtil, HaskellFileUtil, ScalaUtil}
+import intellij.haskell.{GlobalInfo, HaskellNotificationGroup}
 
 class StylishHaskellFormatAction extends AnAction {
 
   override def update(actionEvent: AnActionEvent) {
-    HaskellEditorUtil.enableAction(onlyForProjectFile = true, actionEvent)
+    HaskellEditorUtil.enableExternalAction(actionEvent, (project: Project) => StackProjectManager.isStylishHaskellAvailable(project))
   }
 
   override def actionPerformed(actionEvent: AnActionEvent): Unit = {
@@ -42,26 +41,32 @@ class StylishHaskellFormatAction extends AnAction {
 
 object StylishHaskellFormatAction {
   final val StylishHaskellName = "stylish-haskell"
+  private final val StylishHaskellPath = GlobalInfo.toolPath(StylishHaskellName).toString
+
+  def versionInfo(project: Project): String = {
+    CommandLine.run(Some(project), project.getBasePath, StylishHaskellPath, Seq("--version")).getStdout
+  }
 
   private[action] def format(psiFile: PsiFile): Unit = {
     val project = psiFile.getProject
-    HaskellFileUtil.saveFile(psiFile)
+    HaskellFileUtil.saveFile(psiFile, checkCancelled = false)
 
-    HaskellSettingsState.getStylishHaskellPath(project) match {
-      case Some(stylishHaskellPath) =>
-        val processOutput = ApplicationManager.getApplication.executeOnPooledThread(new Callable[Option[ProcessOutput]] {
-          override def call(): Option[ProcessOutput] = {
-            CommandLine.runProgram(Option(project), project.getBasePath, stylishHaskellPath, Seq(HaskellFileUtil.getAbsoluteFilePath(psiFile)))
-          }
+    HaskellFileUtil.getAbsolutePath(psiFile) match {
+      case Some(path) =>
+        val processOutputFuture = ApplicationManager.getApplication.executeOnPooledThread(ScalaUtil.callable[ProcessOutput] {
+          CommandLine.run(Some(project), project.getBasePath, StylishHaskellPath, Seq(path))
         })
 
-        processOutput.get.foreach(output => if (output.getStderrLines.isEmpty) {
-          HaskellFileUtil.saveFileWithNewContent(psiFile, output.getStdout)
-        } else {
-          HaskellNotificationGroup.logErrorBalloonEvent(project, s"Error while formatting by `$StylishHaskellName`. Error: ${output.getStderr}")
-        })
-
-      case _ => HaskellNotificationGroup.logWarningEvent(project, s"Can not format code because path to `$StylishHaskellName` is not configured in IntelliJ")
+        FutureUtil.waitForValue(project, processOutputFuture, s"reformatting by $StylishHaskellName") match {
+          case None => ()
+          case Some(processOutput) =>
+            if (processOutput.getStderrLines.isEmpty) {
+              HaskellFileUtil.saveFileWithNewContent(psiFile, processOutput.getStdout)
+            } else {
+              HaskellNotificationGroup.logErrorBalloonEvent(project, s"Error while reformatting by `$StylishHaskellName`. Error: ${processOutput.getStderr}")
+            }
+        }
+      case None => HaskellNotificationGroup.logWarningBalloonEvent(psiFile.getProject, s"Can not reformat file because could not determine path for file `${psiFile.getName}`. File exists only in memory")
     }
   }
 }

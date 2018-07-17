@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,6 @@ package intellij.haskell.util
 
 import java.awt.Point
 import java.awt.event.{MouseEvent, MouseMotionAdapter}
-import javax.swing.Icon
-import javax.swing.event.HyperlinkListener
 
 import com.intellij.codeInsight.hint.{HintManager, HintManagerImpl, HintUtil}
 import com.intellij.openapi.actionSystem.{AnActionEvent, CommonDataKeys}
@@ -36,10 +34,14 @@ import com.intellij.ui.LightweightHint
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.util.ui.{PositionTracker, UIUtil}
 import intellij.haskell.HaskellFile
+import javax.swing.Icon
+import javax.swing.event.HyperlinkListener
 
 import scala.collection.JavaConverters._
 
 object HaskellEditorUtil {
+
+  final val HaskellSupportIsNotAvailableWhileBuildingText = "Haskell support is not available while project is being built."
 
   def enableExternalAction(actionEvent: AnActionEvent, enableCondition: Project => Boolean): Unit = {
     Option(actionEvent.getProject) match {
@@ -69,7 +71,7 @@ object HaskellEditorUtil {
       if (HaskellProjectUtil.isHaskellProject(psiFile.getProject)) {
         psiFile match {
           case _: HaskellFile if !onlyForProjectFile => enable()
-          case _: HaskellFile if onlyForProjectFile && !HaskellProjectUtil.isLibraryFile(psiFile).getOrElse(true) => enable()
+          case _: HaskellFile if onlyForProjectFile && !HaskellProjectUtil.isLibraryFile(psiFile) => enable()
           case _ => disable()
         }
       } else {
@@ -140,16 +142,21 @@ object HaskellEditorUtil {
     })
   }
 
-  def showStatusBarInfoMessage(project: Project, message: String): Unit = {
-    WindowManager.getInstance().getStatusBar(project).setInfo(message)
+  def showStatusBarMessage(project: Project, message: String): Unit = {
+    for {
+      wm <- Option(WindowManager.getInstance())
+      sb <- Option(wm.getStatusBar(project))
+    } yield sb.setInfo(message)
   }
 
-  def showStatusBarNotificationBalloon(project: Project, message: String): Unit = {
+  def showStatusBarBalloonMessage(project: Project, message: String): Unit = {
     UIUtil.invokeLaterIfNeeded(() => {
       def run() = {
-        val ideFrame = WindowManager.getInstance.getIdeFrame(project)
-        if (ideFrame != null) {
-          val statusBar = ideFrame.getStatusBar.asInstanceOf[StatusBarEx]
+        for {
+          wm <- Option(WindowManager.getInstance)
+          f <- Option(wm.getIdeFrame(project))
+          statusBar <- Option(f.getStatusBar.asInstanceOf[StatusBarEx])
+        } yield {
           statusBar.notifyProgressByBalloon(MessageType.WARNING, message, null.asInstanceOf[Icon], null.asInstanceOf[HyperlinkListener])
         }
       }
@@ -163,7 +170,11 @@ object HaskellEditorUtil {
   }
 
   def findCurrentElement(psiFile: PsiFile): Option[PsiElement] = {
-   val offset =  Option(FileEditorManagerEx.getInstanceEx(psiFile.getProject).getSelectedTextEditor).map(_.getCaretModel.getCurrentCaret.getOffset)
+    val offset = Option(FileEditorManagerEx.getInstanceEx(psiFile.getProject).getSelectedTextEditor).map(_.getCaretModel.getCurrentCaret.getOffset)
     offset.map(psiFile.findElementAt)
+  }
+
+  def showHaskellSupportIsNotAvailableWhileBuilding(project: Project): Unit = {
+    HaskellEditorUtil.showStatusBarBalloonMessage(project, HaskellSupportIsNotAvailableWhileBuildingText)
   }
 }

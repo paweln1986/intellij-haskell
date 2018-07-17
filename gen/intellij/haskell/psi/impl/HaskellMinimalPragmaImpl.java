@@ -1,14 +1,15 @@
 // This is a generated file. Not intended for manual editing.
 package intellij.haskell.psi.impl;
 
-import java.util.List;
-import org.jetbrains.annotations.*;
 import com.intellij.lang.ASTNode;
-import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiElementVisitor;
 import com.intellij.psi.util.PsiTreeUtil;
-import static intellij.haskell.psi.HaskellTypes.*;
-import intellij.haskell.psi.*;
+import intellij.haskell.psi.HaskellGeneralPragmaContent;
+import intellij.haskell.psi.HaskellMinimalPragma;
+import intellij.haskell.psi.HaskellVisitor;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.List;
 
 public class HaskellMinimalPragmaImpl extends HaskellCompositeElementImpl implements HaskellMinimalPragma {
 
@@ -27,8 +28,8 @@ public class HaskellMinimalPragmaImpl extends HaskellCompositeElementImpl implem
 
   @Override
   @NotNull
-  public HaskellGeneralPragmaContent getGeneralPragmaContent() {
-    return notNullChild(PsiTreeUtil.getChildOfType(this, HaskellGeneralPragmaContent.class));
+  public List<HaskellGeneralPragmaContent> getGeneralPragmaContentList() {
+    return PsiTreeUtil.getChildrenOfTypeAsList(this, HaskellGeneralPragmaContent.class);
   }
 
 }

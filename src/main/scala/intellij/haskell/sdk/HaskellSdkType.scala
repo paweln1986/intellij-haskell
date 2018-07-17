@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 package intellij.haskell.sdk
 
 import java.io.File
-import javax.swing.Icon
 
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.project.Project
@@ -29,6 +28,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import intellij.haskell.external.execution.CommandLine
 import intellij.haskell.util.{HaskellFileUtil, HaskellProjectUtil}
 import intellij.haskell.{HaskellIcons, HaskellNotificationGroup}
+import javax.swing.Icon
 import org.jdom.Element
 
 class HaskellSdkType extends SdkType("Haskell Tool Stack SDK") {
@@ -75,14 +75,19 @@ class HaskellSdkType extends SdkType("Haskell Tool Stack SDK") {
 
       override def validateSelectedFiles(files: Array[VirtualFile]) {
         if (files.length != 0) {
-          val selectedPath = HaskellFileUtil.getAbsoluteFilePath(files(0))
-          var valid = isValidSdkHome(selectedPath)
-          if (!valid) {
-            valid = isValidSdkHome(adjustSelectedSdkHome(selectedPath))
-            if (!valid) {
+          val selectedPath = HaskellFileUtil.getAbsolutePath(files(0))
+          var pathValid = isValidSdkHome(selectedPath)
+          if (!pathValid) {
+            pathValid = isValidSdkHome(adjustSelectedSdkHome(selectedPath))
+            if (!pathValid) {
               val message = "The selected file is not a valid Stack binary"
               throw new Exception(message)
             }
+          }
+          val version = HaskellSdkType.getNumericVersion(selectedPath)
+          if (version.isEmpty || version.exists(_ < "1.7.0")) {
+            val message = "Stack version should be > 1.7.0"
+            throw new Exception(message)
           }
         }
       }
@@ -99,34 +104,37 @@ object HaskellSdkType {
     SdkConfigurationUtil.findOrCreateSdk(null, getInstance)
   }
 
-  def getNumericVersion(sdkHome: String): Option[String] = {
-    val workDir = new File(sdkHome).getParent
-    CommandLine.runProgram(
+  def getNumericVersion(stackPath: String): Option[String] = {
+    val workDir = new File(stackPath).getParent
+    val output = CommandLine.run(
       None,
       workDir,
-      sdkHome,
+      stackPath,
       Seq("--numeric-version"),
       notifyBalloonError = true
-    ).map(_.getStdout)
+    )
+
+    if (output.getExitCode == 0) {
+      Some(output.getStdout)
+    } else {
+      None
+    }
   }
 
   def getStackPath(project: Project, notifyNoSdk: Boolean = true): Option[String] = {
-    HaskellProjectUtil.getProjectRootManager(project).flatMap(projectRootManager => {
-      val stackPath = Option(projectRootManager.getProjectSdk).map(_.getHomePath)
-      stackPath match {
-        case Some(_) => stackPath
-        case None =>
-          if (notifyNoSdk) {
-            HaskellNotificationGroup.logErrorBalloonEvent(project, "Path to Haskell Stack binary is not configured in Project SDK setting.")
-          }
-          None
-      }
-    })
+    val projectRootManager = HaskellProjectUtil.getProjectRootManager(project)
+    val stackPath = Option(projectRootManager.getProjectSdk).map(_.getHomePath)
+    stackPath match {
+      case Some(_) => stackPath
+      case None =>
+        if (notifyNoSdk) {
+          HaskellNotificationGroup.logErrorBalloonEvent(project, "Path to Haskell Stack binary is not configured in Project SDK setting.")
+        }
+        None
+    }
   }
 
   def getSdkName(project: Project): Option[String] = {
-    HaskellProjectUtil.getProjectRootManager(project).flatMap(projectRootManager => {
-      Option(projectRootManager.getProjectSdk).map(_.getName)
-    })
+    Option(HaskellProjectUtil.getProjectRootManager(project).getProjectSdk).map(_.getName)
   }
 }

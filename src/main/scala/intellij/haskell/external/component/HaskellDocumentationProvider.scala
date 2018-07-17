@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,36 +17,83 @@
 package intellij.haskell.external.component
 
 import com.intellij.lang.documentation.AbstractDocumentationProvider
-import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiElement
-import intellij.haskell.HaskellNotificationGroup
-import intellij.haskell.psi.{HaskellPsiUtil, HaskellQualifiedNameElement}
-import intellij.haskell.util.HaskellProjectUtil
+import com.intellij.psi.{PsiElement, PsiFile}
+import intellij.haskell.psi.HaskellPsiUtil
+import intellij.haskell.psi.impl.HaskellPsiImplUtil
+import intellij.haskell.util.{HaskellEditorUtil, HaskellProjectUtil, HtmlElement, StringUtil}
 
 class HaskellDocumentationProvider extends AbstractDocumentationProvider {
 
-  override def generateDoc(psiElement: PsiElement, originalPsiElement: PsiElement): String = {
-    HaskellPsiUtil.findQualifiedNameParent(originalPsiElement) match {
-      case Some(ne) => findDocumentation(psiElement.getProject, ne).getOrElse("No documentation found")
-      case _ => s"No documentation because this is not Haskell identifier: ${psiElement.getText}"
+  private final val DoubleNbsp = HtmlElement.Nbsp + HtmlElement.Nbsp
+
+  override def getQuickNavigateInfo(element: PsiElement, originalElement: PsiElement): String = {
+    val project = Option(element).map(_.getProject)
+    if (project.exists(p => !StackProjectManager.isBuilding(p))) {
+      (Option(element), Option(originalElement)) match {
+        case (Some(e), Some(oe)) =>
+          val psiFile = Option(e.getContainingFile)
+          val moduleName =  psiFile.flatMap(HaskellPsiUtil.findModuleName)
+          val originalPsiFile = Option(oe.getContainingFile)
+          val projectFile = originalPsiFile.exists(HaskellProjectUtil.isProjectFile)
+          val typeSignature = if (projectFile) {
+            val typeInfo = TypeInfoComponent.findTypeInfoForElement(oe).toOption.map(_.typeSignature)
+            typeInfo.map(StringUtil.escapeString)
+          } else {
+            None
+          }
+
+          (moduleName, typeSignature) match {
+            case (Some(mn), Some(ts)) => s"""$ts $DoubleNbsp -- $mn """
+            case (Some(mn), None) => s"""$mn $DoubleNbsp -- No type info available""" + (if (projectFile) " (at this moment)" else "")
+            case (None, Some(ts)) => s"""$ts $DoubleNbsp -- No module info available (at this moment)"""
+            case (None, None) => "No info available (at this moment)"
+          }
+        case _ => null
+      }
+    } else {
+      HaskellEditorUtil.HaskellSupportIsNotAvailableWhileBuildingText
     }
   }
 
-  private def findDocumentation(project: Project, namedElement: HaskellQualifiedNameElement): Option[String] = {
-    val name = namedElement.getIdentifierElement.getName
-    val nameInfo = HaskellComponentsManager.findNameInfo(namedElement, forceGetInfo = true).headOption
-    nameInfo match {
-      case None =>
-        HaskellNotificationGroup.logWarningEvent(project, s"No documentation because no info could be found for identifier: $name")
-        None
-      case Some(ni) =>
-        val moduleName = ni match {
-          case (lei: LibraryNameInfo) => Option(lei.moduleName)
-          case (_: ProjectNameInfo) => HaskellPsiUtil.findModuleName(namedElement.getContainingFile, runInRead = true)
-          case (_: BuiltInNameInfo) => Some(HaskellProjectUtil.Prelude)
-          case _ => None
-        }
-        HoogleComponent.findDocumentation(project, name, moduleName)
+  private final val Separator = HtmlElement.Break + HtmlElement.Break + HtmlElement.HorizontalLine + HtmlElement.Break
+
+  override def generateDoc(element: PsiElement, originalElement: PsiElement): String = {
+    val project = Option(element).map(_.getProject)
+    if (project.exists(p => !StackProjectManager.isBuilding(p))) {
+      (Option(element), Option(originalElement)) match {
+        case (Some(e), Some(oe)) =>
+          val project = e.getProject
+          val definedInSameFile = Option(e.getContainingFile) == Option(oe.getContainingFile)
+          if (e.isInstanceOf[PsiFile]) {
+            getQuickNavigateInfo(e, oe)
+          } else {
+            HaskellPsiUtil.findQualifiedNameParent(oe) match {
+              case Some(qone) =>
+                val presentationText = HaskellPsiUtil.findNamedElement(e).map { ne =>
+                  Separator + "<code>" +
+                    HaskellPsiImplUtil.getItemPresentableText(ne, shortened = false).
+                      replace(" ", HtmlElement.Nbsp).
+                      replace("<", HtmlElement.Lt).
+                      replace(">", HtmlElement.Gt).
+                      replace("\n", HtmlElement.Break) +
+                    "</code>"
+                }.getOrElse("")
+
+                val documentationText = if (definedInSameFile) {
+                  ""
+                } else {
+                  Separator + HoogleComponent.findDocumentation(project, qone).getOrElse("No documentation found")
+                }
+
+                getQuickNavigateInfo(e, oe) + presentationText + documentationText
+
+              case _ => getQuickNavigateInfo(e, oe)
+            }
+          }
+        case _ => null
+      }
+    } else {
+      HaskellEditorUtil.HaskellSupportIsNotAvailableWhileBuildingText
     }
   }
 }

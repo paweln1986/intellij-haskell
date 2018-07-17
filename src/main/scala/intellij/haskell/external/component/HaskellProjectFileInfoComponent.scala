@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,9 @@
 
 package intellij.haskell.external.component
 
-import java.util.concurrent.Executors
+import java.nio.file.Paths
 
-import com.google.common.cache.{CacheBuilder, CacheLoader}
-import com.google.common.util.concurrent.{ListenableFuture, ListenableFutureTask, UncheckedExecutionException}
-import com.intellij.openapi.progress.ProcessCanceledException
+import com.github.blemale.scaffeine.{LoadingCache, Scaffeine}
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.psi.PsiFile
@@ -28,79 +26,82 @@ import intellij.haskell.HaskellNotificationGroup
 import intellij.haskell.external.repl.StackReplsManager
 import intellij.haskell.external.repl.StackReplsManager.StackComponentInfo
 import intellij.haskell.runconfig.console.HaskellConsoleView
-import intellij.haskell.util.HaskellFileUtil
-
-import scala.collection.JavaConverters._
+import intellij.haskell.util.{HaskellFileUtil, ScalaUtil}
 
 private[component] object HaskellProjectFileInfoComponent {
 
-  private case class Key(psiFile: PsiFile)
+  private case class Key(project: Project, filePath: String)
 
-  private val executor = Executors.newCachedThreadPool()
+  private final val Cache: LoadingCache[Key, Option[HaskellProjectFileInfo]] = Scaffeine().build((k: Key) => createFileInfo(k))
 
-  private final val Cache = CacheBuilder.newBuilder()
-    .build(
-      new CacheLoader[Key, Option[HaskellProjectFileInfo]]() {
-
-        override def load(key: Key): Option[HaskellProjectFileInfo] = {
-          createHaskellFileInfo(key)
-        }
-
-        override def reload(key: Key, oldValue: Option[HaskellProjectFileInfo]): ListenableFuture[Option[HaskellProjectFileInfo]] = {
-          val task = ListenableFutureTask.create[Option[HaskellProjectFileInfo]](() => {
-            createHaskellFileInfo(key)
-          })
-          executor.execute(task)
-          task
-        }
-
-        private def createHaskellFileInfo(key: Key): Option[HaskellProjectFileInfo] = {
-          val psiFile = key.psiFile
-          val project = psiFile.getProject
-
-          StackReplsManager.getReplsManager(project).map(_.stackComponentInfos).flatMap(stackComponentInfos => {
-            HaskellConsoleView.findConsoleInfo(psiFile).flatMap(consoleInfo => stackComponentInfos.find(_.target == consoleInfo.stackTarget)) match {
-              case Some(componentInfo) => Some(HaskellProjectFileInfo(componentInfo))
-              case None => getStackComponentInfo(psiFile, stackComponentInfos).map(buildInfo => HaskellProjectFileInfo(buildInfo))
-            }
-          })
-        }
-
-        private def getStackComponentInfo(psiFile: PsiFile, stackTargetBuildInfos: Iterable[StackComponentInfo]): Option[StackComponentInfo] = {
-          val filePath = HaskellFileUtil.getAbsoluteFilePath(psiFile)
-          stackTargetBuildInfos.find(_.sourceDirs.exists(sd => FileUtil.isAncestor(sd, filePath, false))) match {
-            case info@Some(_) => info
-            case None =>
-              HaskellNotificationGroup.logErrorBalloonEvent(psiFile.getProject, s"Can not determine Stack target for file $psiFile because no accompanying `hs-source-dirs` can be found in Cabal file(s)")
-              None
-          }
-        }
-      }
-    )
+  def findHaskellProjectFileInfo(project: Project, filePath: String): Option[HaskellProjectFileInfo] = {
+    val key = Key(project, filePath)
+    Cache.get(key) match {
+      case result@Some(_) => result
+      case _ =>
+        Cache.invalidate(key)
+        None
+    }
+  }
 
   def findHaskellProjectFileInfo(psiFile: PsiFile): Option[HaskellProjectFileInfo] = {
-    try {
-      val key = Key(psiFile)
-      Cache.get(key) match {
-        case result@Some(_) => result
-        case _ =>
-          Cache.invalidate(key)
-          None
-      }
-    }
-    catch {
-      case _: UncheckedExecutionException => None
-      case _: ProcessCanceledException => None
+    val project = psiFile.getProject
+
+    HaskellConsoleView.findConsoleInfo(psiFile) match {
+      case Some(consoleInfo) =>
+        val stackComponentInfos = StackReplsManager.getReplsManager(project).map(_.stackComponentInfos)
+        stackComponentInfos.flatMap(_.find(_.target == consoleInfo.stackTarget)).map(HaskellProjectFileInfo)
+      case None =>
+        val key = HaskellFileUtil.getAbsolutePath(psiFile).map(fp => Key(psiFile.getProject, fp))
+        key.flatMap(k => Cache.get(k) match {
+          case result@Some(_) => result
+          case _ =>
+            Cache.invalidate(k)
+            None
+        })
     }
   }
 
   def invalidate(project: Project): Unit = {
-    val keys = Cache.asMap().keySet().asScala.filter(_.psiFile.getProject == project)
+    val keys = Cache.asMap().keys.filter(_.project == project)
     keys.foreach(Cache.invalidate)
   }
 
   def invalidate(psiFile: PsiFile): Unit = {
-    Cache.invalidate(Key(psiFile))
+    HaskellFileUtil.getAbsolutePath(psiFile).foreach(fp => Cache.invalidate(Key(psiFile.getProject, fp)))
+  }
+
+  private def createFileInfo(key: Key): Option[HaskellProjectFileInfo] = {
+    val project = key.project
+    val filePath = key.filePath
+
+    StackReplsManager.getReplsManager(project).map(_.stackComponentInfos).flatMap(stackComponentInfos => {
+      getStackComponentInfo(project, filePath, stackComponentInfos).map(buildInfo => HaskellProjectFileInfo(buildInfo))
+    })
+  }
+
+  private def getStackComponentInfo(project: Project, filePath: String, stackTargetBuildInfos: Iterable[StackComponentInfo]): Option[StackComponentInfo] = {
+    stackTargetBuildInfos.find(_.mainIs.exists(filePath.contains)) match {
+      case info@Some(_) => info
+      case None =>
+        val sourceDirsByInfo = stackTargetBuildInfos.map(info => (info, info.sourceDirs.filter(sd => FileUtil.isAncestor(sd, filePath, true)))).filterNot({ case (_, sd) => sd.isEmpty })
+        val stackComponentInfo = if (sourceDirsByInfo.size > 1) {
+          val sourceDirByInfo = sourceDirsByInfo.map({ case (info, sds) => (info, sds.maxBy(sd => Paths.get(sd).getNameCount)) })
+          val mostSpecificSourceDirByInfo = ScalaUtil.maxsBy(sourceDirByInfo)({ case (_, sd) => Paths.get(sd).getNameCount })
+          if (mostSpecificSourceDirByInfo.size > 1) {
+            HaskellNotificationGroup.logWarningBalloonEvent(project, s"Ambiguous Stack target for file `$filePath`. It can belong to the source dir of more than one Stack target/Cabal stanza. The first one of `${mostSpecificSourceDirByInfo.map(_._1.target)}` is chosen.")
+          }
+          mostSpecificSourceDirByInfo.headOption.map(_._1)
+        } else {
+          sourceDirsByInfo.headOption.map(_._1)
+        }
+        stackComponentInfo match {
+          case info@Some(_) => info
+          case None =>
+            HaskellNotificationGroup.logErrorBalloonEvent(project, s"Could not determine Stack target for file `$filePath` because no accompanying `hs-source-dirs` or `main-is` can be found in Cabal file(s)")
+            None
+        }
+    }
   }
 }
 

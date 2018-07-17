@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,37 +18,47 @@ package intellij.haskell.external.component
 
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
-import intellij.haskell.HaskellNotificationGroup
-import intellij.haskell.external.execution.StackCommandLine
+import intellij.haskell.external.execution.CommandLine
 import intellij.haskell.settings.HaskellSettingsState
 import intellij.haskell.util.HaskellFileUtil
+import intellij.haskell.{GlobalInfo, HaskellNotificationGroup}
 import spray.json.JsonParser.ParsingException
 import spray.json.{DefaultJsonProtocol, _}
 
 object HLintComponent {
 
-  final val HlintName = "hlint"
+  final val HLintName = "hlint"
+  private final val HLintPath = GlobalInfo.toolPath(HLintName).toString
 
   def check(psiFile: PsiFile): Seq[HLintInfo] = {
     if (StackProjectManager.isHlintAvailable(psiFile.getProject)) {
       val project = psiFile.getProject
       val hlintOptions = if (HaskellSettingsState.getHlintOptions.trim.isEmpty) Array[String]() else HaskellSettingsState.getHlintOptions.split("""\s+""")
-      StackCommandLine.runCommand(project, Seq("exec", "--", HlintName) ++ hlintOptions ++ Seq("--json", HaskellFileUtil.getAbsoluteFilePath(psiFile)), ignoreExitCode = true).map(output => {
-        if (output.getStderr.contains("Executable named hlint not found on path")) {
-          HaskellNotificationGroup.logErrorBalloonEvent(project, s"$HlintName can not be found on path")
+      HaskellFileUtil.getAbsolutePath(psiFile) match {
+        case Some(path) =>
+          val output = runHLint(project, hlintOptions.toSeq ++ Seq("--json", path), ignoreExitCode = true)
+          if (output.getExitCode > 0 && output.getStderr.nonEmpty) {
+            HaskellNotificationGroup.logErrorBalloonEvent(project, s"Error while calling $HLintName: ${output.getStderr}")
+            Seq()
+          } else {
+            deserializeHLintInfo(project, output.getStdout)
+          }
+        case None => ()
+          HaskellNotificationGroup.logWarningBalloonEvent(psiFile.getProject, s"Can not display HLint suggestions because can not determine path for file `${psiFile.getName}`. File exists only in memory")
           Seq()
-        }
-        else if (output.getExitCode > 0 && output.getStderr.nonEmpty) {
-          HaskellNotificationGroup.logErrorBalloonEvent(project, s"Error while calling $HlintName: ${output.getStderr}")
-          Seq()
-        } else {
-          deserializeHLintInfo(project, output.getStdout)
-        }
-      }).getOrElse(Seq())
+      }
     } else {
-      HaskellNotificationGroup.logInfoEvent(psiFile.getProject, s"$HlintName is not yet available")
+      HaskellNotificationGroup.logInfoEvent(psiFile.getProject, s"$HLintName is not (yet) available")
       Seq()
     }
+  }
+
+  def versionInfo(project: Project): String = {
+    runHLint(project, Seq("--version"), ignoreExitCode = false).getStdout
+  }
+
+  private def runHLint(project: Project, arguments: Seq[String], ignoreExitCode: Boolean) = {
+    CommandLine.run(Some(project), project.getBasePath, HLintPath, arguments, logOutput = false, ignoreExitCode = ignoreExitCode)
   }
 
   private object HlintJsonProtocol extends DefaultJsonProtocol {
@@ -65,11 +75,11 @@ object HLintComponent {
         hlintInfo.parseJson.convertTo[Seq[HLintInfo]]
       } catch {
         case e: ParsingException =>
-          HaskellNotificationGroup.logErrorEvent(project, s"Error ${e.getMessage} while parsing $hlintInfo")
+          HaskellNotificationGroup.logErrorEvent(project, s"Error `${e.getMessage}` while parsing `$hlintInfo`")
           Seq()
       }
     }
   }
 }
 
-case class HLintInfo(module: Option[String], decl: Option[String], severity: String, hint: String, file: String, startLine: Int, startColumn: Int, endLine: Int, endColumn: Int, from: String = "", to: Option[String], note: Seq[String])
+case class HLintInfo(module: Seq[String], decl: Seq[String], severity: String, hint: String, file: String, startLine: Int, startColumn: Int, endLine: Int, endColumn: Int, from: String = "", to: Option[String], note: Seq[String])

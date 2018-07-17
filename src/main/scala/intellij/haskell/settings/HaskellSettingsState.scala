@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,23 +16,8 @@
 
 package intellij.haskell.settings
 
-import com.intellij.openapi.project.Project
-import intellij.haskell.HaskellNotificationGroup
-
 object HaskellSettingsState {
   private def state = HaskellSettingsPersistentStateComponent.getInstance().getState
-
-  def getHindentPath(project: Project): Option[String] = {
-    val path = findPath(state.hindentPath)
-    notifyIfPathIsNotSet(project, path, HaskellConfigurable.Hindent)
-    path
-  }
-
-  def getStylishHaskellPath(project: Project): Option[String] = {
-    val path = findPath(state.stylishHaskellPath)
-    notifyIfPathIsNotSet(project, path, HaskellConfigurable.StylishHaskell)
-    path
-  }
 
   def getReplTimeout: Integer = {
     state.replTimeout
@@ -42,13 +27,19 @@ object HaskellSettingsState {
     state.hlintOptions
   }
 
-  private def notifyIfPathIsNotSet(project: Project, path: Option[String], name: String) {
-    if (path.isEmpty) {
-      HaskellNotificationGroup.logErrorBalloonEvent(project, s"Path to <b>$name</b> is not set. Please do in <b>Settings</b>/<b>Other Settings</b>/<b>Haskell</b>.")
-    }
+  def isReformatCodeBeforeCommit: Boolean = {
+    state.reformatCodeBeforeCommit
   }
 
-  private def findPath(path: String): Option[String] = {
-    Option(path).filterNot(_.trim.isEmpty)
+  def setReformatCodeBeforeCommit(reformat: Boolean): Unit = {
+    state.reformatCodeBeforeCommit = reformat
+  }
+
+  def isOptmizeImportsBeforeCommit: Boolean = {
+    state.optimizeImportsBeforeCommit
+  }
+
+  def setOptimizeImportsBeforeCommit(optimize: Boolean): Unit = {
+    state.optimizeImportsBeforeCommit = optimize
   }
 }

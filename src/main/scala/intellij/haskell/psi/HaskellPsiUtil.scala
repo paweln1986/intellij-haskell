@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,18 @@
 
 package intellij.haskell.psi
 
+import com.github.blemale.scaffeine.{LoadingCache, Scaffeine}
 import com.intellij.lang.ASTNode
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.util.Computable
+import com.intellij.openapi.project.Project
+import com.intellij.psi.impl.source.tree.TreeUtil
 import com.intellij.psi.tree.{IElementType, TokenSet}
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.psi.{PsiElement, PsiFile, TokenType}
 import intellij.haskell.HaskellFile
 import intellij.haskell.psi.HaskellElementCondition._
 import intellij.haskell.psi.HaskellTypes._
+import intellij.haskell.util.ApplicationUtil
 
 import scala.annotation.tailrec
 import scala.collection.JavaConverters._
@@ -36,8 +38,8 @@ object HaskellPsiUtil {
     PsiTreeUtil.findChildrenOfType(psiFile.getOriginalFile, classOf[HaskellImportDeclaration]).asScala
   }
 
-  def findLanguageExtensions(psiFile: PsiFile): Iterable[HaskellLanguagePragma] = {
-    PsiTreeUtil.findChildrenOfType(psiFile.getOriginalFile, classOf[HaskellLanguagePragma]).asScala
+  def findLanguageExtensions(psiFile: PsiFile): Iterable[HaskellFileHeaderPragma] = {
+    PsiTreeUtil.findChildrenOfType(psiFile.getOriginalFile, classOf[HaskellFileHeaderPragma]).asScala
   }
 
   def findNamedElement(psiElement: PsiElement): Option[HaskellNamedElement] = {
@@ -70,12 +72,40 @@ object HaskellPsiUtil {
     findHaskellDeclarationElements(psiFile).filterNot(e => e.getNode.getElementType == HS_IMPORT_DECLARATION)
   }
 
-  def findModuleDeclaration(psiFile: PsiFile, runInRead: Boolean = false): Option[HaskellModuleDeclaration] = {
-    runReadAction(Option(PsiTreeUtil.findChildOfType(psiFile.getOriginalFile, classOf[HaskellModuleDeclaration])), runInRead)
+  def findModuleDeclaration(psiFile: PsiFile): Option[HaskellModuleDeclaration] = {
+    ApplicationUtil.runReadAction(Option(PsiTreeUtil.findChildOfType(psiFile.getOriginalFile, classOf[HaskellModuleDeclaration])))
   }
 
-  def findModuleName(psiFile: PsiFile, runInRead: Boolean = false): Option[String] = {
-    runReadAction(Option(PsiTreeUtil.findChildOfType(psiFile.getOriginalFile, classOf[HaskellModuleDeclaration])).flatMap(_.getModuleName), runInRead)
+  def findModuleNameInPsiTree(psiFile: PsiFile): Option[String] = {
+    Option(PsiTreeUtil.findChildOfType(psiFile.getOriginalFile, classOf[HaskellModuleDeclaration])).flatMap(_.getModuleName)
+  }
+
+  private final val ModuleNameCache: LoadingCache[PsiFile, Option[String]] = Scaffeine().build((psiFile: PsiFile) => {
+    ApplicationUtil.runReadAction(findModuleNameInPsiTree(psiFile))
+  })
+
+  def findModuleName(psiFile: PsiFile): Option[String] = {
+    ModuleNameCache.get(psiFile.getOriginalFile) match {
+      case mn@Some(_) => mn
+      case None =>
+        ModuleNameCache.invalidate(psiFile)
+        None
+    }
+  }
+
+  def invalidateModuleName(psiFile: PsiFile): Unit = {
+    ModuleNameCache.invalidate(psiFile)
+  }
+
+  def invalidateAllModuleNames(project: Project): Unit = {
+    ModuleNameCache.asMap().keys.filter(_.getProject == project).foreach(ModuleNameCache.invalidate)
+  }
+
+  def findQualifierParent(psiElement: PsiElement): Option[HaskellQualifier] = {
+    psiElement match {
+      case e: HaskellQualifier => Some(e)
+      case e => Option(TreeUtil.findParent(e.getNode, HaskellTypes.HS_QUALIFIER)).map(_.getPsi.asInstanceOf[HaskellQualifier])
+    }
   }
 
   def findQualifiedNameParent(psiElement: PsiElement): Option[HaskellQualifiedNameElement] = {
@@ -142,6 +172,13 @@ object HaskellPsiUtil {
     }
   }
 
+  def findTypeSignatureDeclarationParent(psiElement: PsiElement): Option[HaskellTypeSignature] = {
+    psiElement match {
+      case e: HaskellTypeSignature => Some(e)
+      case e => Option(PsiTreeUtil.findFirstParent(e, TypeSignatureCondition)).map(_.asInstanceOf[HaskellTypeSignature])
+    }
+  }
+
   def findExpressionParent(psiElement: PsiElement): Option[HaskellExpression] = {
     psiElement match {
       case e: HaskellExpression => Some(e)
@@ -187,18 +224,4 @@ object HaskellPsiUtil {
     Stream.iterate(psiElement.getParent)(_.getParent).takeWhile(_ != null).collectFirst(f)
   }
 
-  private def runReadAction[T](f: => T, runInRead: Boolean = false): T = {
-    if (runInRead) {
-      ApplicationManager.getApplication.runReadAction {
-        new Computable[T] {
-          override def compute(): T = {
-            f
-          }
-        }
-      }
-    }
-    else {
-      f
-    }
-  }
 }

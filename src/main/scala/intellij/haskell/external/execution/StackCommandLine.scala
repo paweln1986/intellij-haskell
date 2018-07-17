@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,61 +16,86 @@
 
 package intellij.haskell.external.execution
 
-import com.intellij.compiler.impl.{CompileDriver, ProjectCompileScope}
+import com.intellij.compiler.impl._
+import com.intellij.compiler.progress.CompilerTask
 import com.intellij.execution.ExecutionException
 import com.intellij.execution.process._
-import com.intellij.openapi.application.{Result, WriteAction}
 import com.intellij.openapi.compiler.{CompileContext, CompileTask, CompilerMessageCategory}
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
-import com.intellij.openapi.vfs.CharsetToolkit
+import com.intellij.openapi.vfs.{CharsetToolkit, VfsUtil}
 import intellij.haskell.HaskellNotificationGroup
 import intellij.haskell.sdk.HaskellSdkType
-import intellij.haskell.util.HaskellFileUtil
+import intellij.haskell.util.{HaskellFileUtil, HaskellProjectUtil}
 
 import scala.collection.mutable.ListBuffer
+import scala.concurrent.SyncVar
 
 object StackCommandLine {
 
-  def runCommand(project: Project, command: Seq[String], timeoutInMillis: Long = CommandLine.DefaultTimeout.toMillis, captureOutput: Option[CaptureOutput] = None,
-                 notifyBalloonError: Boolean = false, ignoreExitCode: Boolean = false): Option[ProcessOutput] = {
-    HaskellSdkType.getStackPath(project).flatMap(stackPath => {
-      CommandLine.runProgram(
+  final val NoDiagnosticsShowCaretFlag = "-fno-diagnostics-show-caret"
+
+  def run(project: Project, arguments: Seq[String], timeoutInMillis: Long = CommandLine.DefaultTimeout.toMillis,
+          ignoreExitCode: Boolean = false, logOutput: Boolean = false, workDir: Option[String] = None, notifyBalloonError: Boolean = false): Option[ProcessOutput] = {
+    HaskellSdkType.getStackPath(project).map(stackPath => {
+      CommandLine.run(
         Some(project),
-        project.getBasePath,
+        workDir.getOrElse(project.getBasePath),
         stackPath,
-        command,
+        arguments,
         timeoutInMillis.toInt,
-        captureOutput,
-        notifyBalloonError,
-        ignoreExitCode)
+        ignoreExitCode = ignoreExitCode,
+        logOutput = logOutput,
+        notifyBalloonError = notifyBalloonError
+      )
     })
   }
 
-  def executeBuild(project: Project, buildArguments: Seq[String], message: String, notifyBalloonError: Boolean = false): Option[ProcessOutput] = {
-    val arguments = Seq("build") ++ buildArguments
-    logStarting(project, arguments)
-    val processOutput = runCommand(project, arguments, -1, Some(CaptureOutputToLog))
-    if (processOutput.isEmpty || processOutput.exists(_.getExitCode != 0)) {
-      HaskellNotificationGroup.logErrorEvent(project, s"Building `$message` has failed")
-    } else {
-      HaskellNotificationGroup.logInfoEvent(project, s"Building `$message` is finished successfully")
+  def installTool(project: Project, toolName: String): Boolean = {
+    import intellij.haskell.GlobalInfo._
+    val arguments = Seq("--stack-root", toolsStackRootPath, "--resolver", StackageLtsVersion, "--compiler", "ghc-8.2.2", "--system-ghc", "--local-bin-path", toolsBinPath, "install", toolName)
+    val processOutput = run(project, arguments, -1, logOutput = true, notifyBalloonError = true, workDir = Some(VfsUtil.getUserHomeDir.getPath))
+    processOutput.exists(o => o.getExitCode == 0 && !o.isTimeout)
+  }
+
+  def updateStackIndex(project: Project): Option[ProcessOutput] = {
+    import intellij.haskell.GlobalInfo._
+    val arguments = Seq("update", "--stack-root", toolsStackRootPath)
+    run(project, arguments, -1, logOutput = true, notifyBalloonError = true)
+  }
+
+  def build(project: Project, buildTargets: Seq[String], logBuildResult: Boolean): Option[ProcessOutput] = {
+    val arguments = Seq("build") ++ buildTargets ++ Seq("--fast")
+    val processOutput = run(project, arguments, -1, ignoreExitCode = true, logOutput = logBuildResult)
+    if (logBuildResult) {
+      if (processOutput.isEmpty || processOutput.exists(_.getExitCode != 0)) {
+        HaskellNotificationGroup.logErrorEvent(project, s"Building `${buildTargets.mkString(", ")}` has failed, see Haskell Event log for more information")
+      } else {
+        HaskellNotificationGroup.logInfoEvent(project, s"Building `${buildTargets.mkString(", ")}` is finished successfully")
+      }
     }
     processOutput
   }
 
-  def buildProjectDependenciesInMessageView(project: Project, progressIndicator: ProgressIndicator): Option[Boolean] = {
-    StackCommandLine.executeInMessageView(project, Seq("build", "--fast", "--test", "--bench", "--no-run-tests", "--no-run-benchmarks", "--only-dependencies"), Some(progressIndicator))
+  def buildProjectDependenciesInMessageView(project: Project): Option[Boolean] = {
+    StackCommandLine.executeInMessageView(project, Seq("build", "--fast", "--test", "--bench", "--no-run-tests", "--no-run-benchmarks", "--only-dependencies"))
   }
 
-  def buildProjectInMessageView(project: Project, progressIndicator: ProgressIndicator): Option[Boolean] = {
-    StackCommandLine.executeInMessageView(project, Seq("build", "--fast"), Some(progressIndicator))
+  private def ghcOptions(project: Project) = {
+    if (HaskellProjectUtil.setNoDiagnosticsShowCaretFlag(project)) {
+      Seq("--ghc-options", NoDiagnosticsShowCaretFlag)
+    } else {
+      Seq()
+    }
   }
 
-  def executeInMessageView(project: Project, arguments: Seq[String], progressIndicator: Option[ProgressIndicator] = None): Option[Boolean] =
+  def buildProjectInMessageView(project: Project): Option[Boolean] = {
+    StackCommandLine.executeInMessageView(project, Seq("build", "--fast") ++ ghcOptions(project))
+  }
+
+  def executeInMessageView(project: Project, arguments: Seq[String]): Option[Boolean] = {
     HaskellSdkType.getStackPath(project).flatMap(stackPath => {
-      logStarting(project, arguments)
       val cmd = CommandLine.createCommandLine(project.getBasePath, stackPath, arguments)
       (try {
         Option(cmd.createProcess())
@@ -82,10 +107,11 @@ object StackCommandLine {
 
         val handler = new BaseOSProcessHandler(process, cmd.getCommandLineString, CharsetToolkit.getDefaultSystemCharset)
 
-        val task = new CompileTask {
+        val compilerTask = new CompilerTask(project, s"executing `${cmd.getCommandLineString}`", false, false, true, true)
+        val compileTask = new CompileTask {
 
           def execute(compileContext: CompileContext): Boolean = {
-            val adapter = new MessageViewProcessAdapter(compileContext, progressIndicator.getOrElse(compileContext.getProgressIndicator))
+            val adapter = new MessageViewProcessAdapter(compileContext, compilerTask.getIndicator)
             handler.addProcessListener(adapter)
             handler.startNotify()
             handler.waitFor()
@@ -94,32 +120,38 @@ object StackCommandLine {
           }
         }
 
-        val compileDriver = new CompileDriver(project)
+        val compileContext = new CompileContextImpl(project, compilerTask, new ProjectCompileScope(project), false, false)
 
-        new WriteAction[Unit]() {
+        val compileResult = new SyncVar[Boolean]
 
-          override def run(result: Result[Unit]): Unit = {
-            compileDriver.executeCompileTask(task, new ProjectCompileScope(project), s"executing ${cmd.getCommandLineString}", null)
-          }
-        }.execute()
+        compilerTask.start(() => {
+          compileResult.put(compileTask.execute(compileContext))
+        }, null)
 
-        handler.waitFor()
-        handler.getExitCode == 0
+        compileResult.get
       })
     })
-
-  private def logStarting(project: Project, arguments: Seq[String]) = {
-    HaskellNotificationGroup.logInfoEvent(project, s"""Starting to execute `stack ${arguments.mkString(" ")}`""")
   }
 
   private class MessageViewProcessAdapter(val compileContext: CompileContext, val progressIndicator: ProgressIndicator) extends ProcessAdapter() {
 
+    private final val WhileBuildingText = "--  While building custom"
+    private final var whileBuildingTextIsPassed = false
+
     private val previousMessageLines = ListBuffer[String]()
 
     override def onTextAvailable(event: ProcessEvent, outputType: Key[_]) {
-      val text = event.getText
+      // Workaround to remove the indentation after `-- While building` so the error/warning lines can be properly  parsed.
+      val text = if (whileBuildingTextIsPassed) {
+        event.getText.drop(4)
+      } else {
+        event.getText
+      }
       progressIndicator.setText(text)
       addToMessageView(text, outputType)
+      if (text.startsWith(WhileBuildingText)) {
+        whileBuildingTextIsPassed = true
+      }
     }
 
     def addLastMessage(): Unit = {
@@ -143,7 +175,7 @@ object StackCommandLine {
       }
     }
 
-    private def addMessage(): Unit = {
+    private def addMessage() = {
       val errorMessageLine = previousMessageLines.mkString(" ")
       val compilationProblem = HaskellCompilationResultHelper.parseErrorLine(None, errorMessageLine.replaceAll("\n", " "))
       compilationProblem match {

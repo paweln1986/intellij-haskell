@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 package intellij.haskell.util
 
 import com.intellij.openapi.editor.Document
-import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.psi.PsiFile
 
 case class LineColumnPosition(lineNr: Int, columnNr: Int) extends Ordered[LineColumnPosition] {
@@ -35,19 +34,15 @@ case class LineColumnPosition(lineNr: Int, columnNr: Int) extends Ordered[LineCo
 object LineColumnPosition {
 
   def fromOffset(psiFile: PsiFile, offset: Int): Option[LineColumnPosition] = {
-    val fdm = FileDocumentManager.getInstance
     for {
-      file <- HaskellFileUtil.findVirtualFile(psiFile)
-      doc <- Option(fdm.getDocument(file))
+      doc <- HaskellFileUtil.findDocument(psiFile)
       li <- if (offset <= doc.getTextLength) Some(doc.getLineNumber(offset)) else None
     } yield LineColumnPosition(li + 1, offset - doc.getLineStartOffset(li) + 1)
   }
 
   def getOffset(psiFile: PsiFile, lineColPos: LineColumnPosition): Option[Int] = {
-    val fdm = FileDocumentManager.getInstance
     for {
-      file <- HaskellFileUtil.findVirtualFile(psiFile)
-      doc <- Option(fdm.getDocument(file))
+      doc <- HaskellFileUtil.findDocument(psiFile)
       lineIndex <- getLineIndex(lineColPos.lineNr, doc)
       startOffsetLine = doc.getLineStartOffset(lineIndex)
     } yield startOffsetLine + lineColPos.columnNr - 1

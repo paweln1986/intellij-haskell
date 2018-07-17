@@ -110,23 +110,23 @@ symbol_no_dot       = {equal} | {at} | {backslash} | {vertical_bar} | {tilde} | 
                         {plus} | {slash} | {lt} | {gt} | {question_mark} | {caret} | {dash} | "⊜" | "≣" | "≤" | "≥"
 symbol              = {symbol_no_dot} | {dot}
 
-var_id              = {question_mark}? {small} ({small} | {large} | {digit} | {quote})* {hash}*
+var_id              = {question_mark}? {small} ({small} | {large} | {digit} | {quote})*
 varsym_id           = (({dot_dot} | {colon} | {colon_colon} | {equal} | {backslash} | {vertical_bar} | {left_arrow} | {right_arrow} | {at} | {tilde} | {double_right_arrow} | {dot}) ({symbol} | {colon})+) |
                         {symbol_no_dot} ({symbol} | {colon})*
 
-con_id              = {large} ({small} | {large} | {digit} | {quote})* {hash}*
+con_id              = {large} ({small} | {large} | {digit} | {quote})*
 consym_id           = {quote}? {colon} ({symbol} | {colon})*
 
 shebang_line        = {hash} {exclamation_mark} [^\r\n]*
 
-pragma_start        = "{-#"
-pragma_end          = "#-}"
+pragma_start        = {left_brace}{dash}{hash}
+pragma_end          = {hash}{dash}{right_brace}
 
 comment             = {dash}{dash}{dash}*[^\r\n\!\#\$\%\&\⋆\+\.\/\<\=\>\?\@][^\r\n]* | {dash}{dash}{white_char}* | "\\begin{code}"
-ncomment_start      = "{-"
-ncomment_end        = "-}"
+ncomment_start      = {left_brace}{dash}
+ncomment_end        = {dash}{right_brace}
 haddock             = {dash}{dash}{white_char}[\^\|][^\r\n]* ({newline}{white_char}*{comment})*
-nhaddock_start      = "{-|" | "{- |"
+nhaddock_start      = {left_brace}{dash}{white_char}?{vertical_bar}
 
 %%
 
@@ -139,7 +139,7 @@ nhaddock_start      = "{-|" | "{- |"
         int state = yystate();
         yybegin(YYINITIAL);
         zzStartRead = haddockStart;
-        return HS_NHADDOCK;
+        return HS_NOT_TERMINATED_COMMENT;
     }
 
     {ncomment_end} {
@@ -157,7 +157,7 @@ nhaddock_start      = "{-|" | "{- |"
     .|{white_char}|{newline} {}
 }
 
-{nhaddock_start}({white_char} | {newline} | "-" | [^#\-\}]) {
+{nhaddock_start} {
     yybegin(NHADDOCK);
     haddockDepth = 0;
     haddockStart = getTokenStart();
@@ -173,7 +173,7 @@ nhaddock_start      = "{-|" | "{- |"
         int state = yystate();
         yybegin(YYINITIAL);
         zzStartRead = commentStart;
-        return HS_NCOMMENT;
+        return HS_NOT_TERMINATED_COMMENT;
     }
 
     {ncomment_end} {
@@ -191,11 +191,12 @@ nhaddock_start      = "{-|" | "{- |"
     .|{white_char}|{newline} {}
 }
 
-{ncomment_start}({white_char} | {newline} | "-" | [^#\-\}]) {
+{ncomment_start} {
     yybegin(NCOMMENT);
     commentDepth = 0;
     commentStart = getTokenStart();
 }
+
 
 <QQ> {
     {left_bracket} ({var_id}|{con_id}|{dot})* {vertical_bar} {
@@ -233,13 +234,12 @@ nhaddock_start      = "{-|" | "{- |"
     {newline}             { return HS_NEWLINE; }
 
     {haddock}             { return HS_HADDOCK; }
+    {pragma_start}        { return HS_PRAGMA_START; }
+    {pragma_end}          { return HS_PRAGMA_END; }
+
     {comment}             { return HS_COMMENT; }
     {white_space}         { return com.intellij.psi.TokenType.WHITE_SPACE; }
 
-    {ncomment_start}      { return HS_NCOMMENT_START; }
-    {ncomment_end}        { return HS_NCOMMENT_END; }
-    {pragma_start}        { return HS_PRAGMA_START; }
-    {pragma_end}          { return HS_PRAGMA_END; }
 
     // not listed as reserved identifier but have meaning in certain context,
     // let's say specialreservedid

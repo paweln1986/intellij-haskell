@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,4 +37,5 @@ public class HaskellParserUtil extends GeneratedParserUtilBase {
     public static boolean noSpaceAfterQualifier(PsiBuilder builder, int level) {
         return (builder.rawLookup(0) == HS_CON_ID && builder.rawLookup(1) == HS_DOT);
     }
+
 }

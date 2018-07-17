@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -105,10 +105,10 @@ class CreateHaskellFileAction extends CreateFileFromTemplateAction(CreateHaskell
   }
 
   override def createFileFromTemplate(fileName: String, template: FileTemplate, fileDir: PsiDirectory): PsiFile = {
-    val path = HaskellFileUtil.getAbsoluteFilePath(fileDir.getVirtualFile)
+    val path = HaskellFileUtil.getAbsolutePath(fileDir.getVirtualFile)
     val pathItems = ProjectRootManager.getInstance(fileDir.getProject)
       .getContentSourceRoots
-      .map(HaskellFileUtil.getAbsoluteFilePath)
+      .map(HaskellFileUtil.getAbsolutePath)
       .find(path.startsWith)
       .map(s => if (s != path) {
         path.replace(s + File.separator, "").split(File.separator).toList

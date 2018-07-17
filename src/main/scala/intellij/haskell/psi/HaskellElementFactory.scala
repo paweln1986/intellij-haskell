@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@ package intellij.haskell.psi
 
 import java.util
 
+import com.intellij.application.options.CodeStyle
 import com.intellij.openapi.project.Project
-import com.intellij.psi.codeStyle.CodeStyleSettingsManager
 import com.intellij.psi.impl.PsiFileFactoryImpl
 import com.intellij.psi.impl.source.tree.LeafPsiElement
 import com.intellij.psi.tree.IElementType
@@ -69,9 +69,9 @@ object HaskellElementFactory {
     createElementFromText(project, declaration, HS_TOP_DECLARATION).map(_.asInstanceOf[HaskellTopDeclaration])
   }
 
-  def createLanguagePragma(project: Project, languagePragma: String): HaskellLanguagePragma = {
+  def createLanguagePragma(project: Project, languagePragma: String): HaskellFileHeaderPragma = {
     val haskellFile = createFileFromText(project, languagePragma)
-    PsiTreeUtil.findChildOfType(haskellFile, classOf[HaskellLanguagePragma])
+    PsiTreeUtil.findChildOfType(haskellFile, classOf[HaskellFileHeaderPragma])
   }
 
   def createLeafPsiElements(project: Project, code: String): util.Collection[LeafPsiElement] = {
@@ -98,7 +98,7 @@ object HaskellElementFactory {
   }
 
   def createTab(project: Project): PsiWhiteSpace = {
-    val tabSize = CodeStyleSettingsManager.getInstance().getCurrentSettings.getTabSize(HaskellFileType.Instance)
+    val tabSize = CodeStyle.getSettings(project).getTabSize(HaskellFileType.Instance)
     createWhiteSpace(project, " " * tabSize)
   }
 

@@ -6,11 +6,11 @@ import org.jetbrains.annotations.NotNull;
 
 public class HaskellVisitor extends PsiElementVisitor {
 
-  public void visitAnnPragma(@NotNull HaskellAnnPragma o) {
+  public void visitCcontext(@NotNull HaskellCcontext o) {
     visitCompositeElement(o);
   }
 
-  public void visitCcontext(@NotNull HaskellCcontext o) {
+  public void visitCdeclDataDeclaration(@NotNull HaskellCdeclDataDeclaration o) {
     visitCompositeElement(o);
   }
 
@@ -62,10 +62,6 @@ public class HaskellVisitor extends PsiElementVisitor {
     visitCNameElement(o);
   }
 
-  public void visitConstantFoldedPragma(@NotNull HaskellConstantFoldedPragma o) {
-    visitCompositeElement(o);
-  }
-
   public void visitConstr1(@NotNull HaskellConstr1 o) {
     visitCompositeElement(o);
   }
@@ -99,16 +95,8 @@ public class HaskellVisitor extends PsiElementVisitor {
     // visitDeclarationElement(o);
   }
 
-  public void visitDeprecatedWarnPragma(@NotNull HaskellDeprecatedWarnPragma o) {
-    visitCompositeElement(o);
-  }
-
   public void visitDerivingDeclaration(@NotNull HaskellDerivingDeclaration o) {
     visitDeclarationElement(o);
-  }
-
-  public void visitDummyPragma(@NotNull HaskellDummyPragma o) {
-    visitCompositeElement(o);
   }
 
   public void visitExport(@NotNull HaskellExport o) {
@@ -148,10 +136,6 @@ public class HaskellVisitor extends PsiElementVisitor {
   }
 
   public void visitGtycon(@NotNull HaskellGtycon o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitHaddockPragma(@NotNull HaskellHaddockPragma o) {
     visitCompositeElement(o);
   }
 
@@ -199,27 +183,7 @@ public class HaskellVisitor extends PsiElementVisitor {
     visitCompositeElement(o);
   }
 
-  public void visitIncludePragma(@NotNull HaskellIncludePragma o) {
-    visitCompositeElement(o);
-  }
-
   public void visitIncoherentPragma(@NotNull HaskellIncoherentPragma o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitInlinablePragma(@NotNull HaskellInlinablePragma o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitInlineFusedPragma(@NotNull HaskellInlineFusedPragma o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitInlineInnerPragma(@NotNull HaskellInlineInnerPragma o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitInlinePragma(@NotNull HaskellInlinePragma o) {
     visitCompositeElement(o);
   }
 
@@ -240,14 +204,6 @@ public class HaskellVisitor extends PsiElementVisitor {
   }
 
   public void visitKindSignature(@NotNull HaskellKindSignature o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitLanguagePragma(@NotNull HaskellLanguagePragma o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitLinePragma(@NotNull HaskellLinePragma o) {
     visitCompositeElement(o);
   }
 
@@ -281,18 +237,6 @@ public class HaskellVisitor extends PsiElementVisitor {
 
   public void visitNewtypeDeclaration(@NotNull HaskellNewtypeDeclaration o) {
     visitDataConstructorDeclarationElement(o);
-  }
-
-  public void visitNoinlinePragma(@NotNull HaskellNoinlinePragma o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitNounpackPragma(@NotNull HaskellNounpackPragma o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitOptionsGhcPragma(@NotNull HaskellOptionsGhcPragma o) {
-    visitCompositeElement(o);
   }
 
   public void visitOtherPragma(@NotNull HaskellOtherPragma o) {
@@ -344,10 +288,6 @@ public class HaskellVisitor extends PsiElementVisitor {
   }
 
   public void visitReservedId(@NotNull HaskellReservedId o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitRulesPragma(@NotNull HaskellRulesPragma o) {
     visitCompositeElement(o);
   }
 
@@ -416,10 +356,6 @@ public class HaskellVisitor extends PsiElementVisitor {
   }
 
   public void visitUnpackNounpackPragma(@NotNull HaskellUnpackNounpackPragma o) {
-    visitCompositeElement(o);
-  }
-
-  public void visitUnpackPragma(@NotNull HaskellUnpackPragma o) {
     visitCompositeElement(o);
   }
 

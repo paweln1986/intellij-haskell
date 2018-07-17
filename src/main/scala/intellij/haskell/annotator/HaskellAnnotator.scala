@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import com.intellij.codeInsight.intention.impl.BaseIntentionAction
 import com.intellij.lang.annotation.{AnnotationHolder, ExternalAnnotator, HighlightSeverity}
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.impl.source.tree.TreeUtil
@@ -42,27 +43,32 @@ import scala.collection.JavaConverters._
 class HaskellAnnotator extends ExternalAnnotator[(PsiFile, Option[PsiElement]), CompilationResult] {
 
   override def collectInformation(psiFile: PsiFile, editor: Editor, hasErrors: Boolean): (PsiFile, Option[PsiElement]) = {
-    if (HaskellConsoleView.isConsoleFile(psiFile)) {
+    if (HaskellConsoleView.isConsoleFile(psiFile) || StackProjectManager.isBuilding(psiFile.getProject) || HaskellProjectUtil.isLibraryFile(psiFile)) {
       null
     } else {
       (psiFile, HaskellFileUtil.findVirtualFile(psiFile)) match {
         case (_, None) => null // can be in case if file is in memory only (just created file)
         case (_, Some(f)) if f.getFileType != HaskellFileType.Instance => null
-        case (_, Some(_)) if !psiFile.isValid | HaskellProjectUtil.isLibraryFile(psiFile).getOrElse(true) | StackProjectManager.isBuilding(psiFile.getProject) => null
+        case (_, Some(_)) if !psiFile.isValid => null
         case (_, Some(_)) =>
-          val currentElement = Option(psiFile.findElementAt(editor.getCaretModel.getOffset)).flatMap(e => Option(PsiTreeUtil.prevVisibleLeaf(e))).filter(_.isValid)
+          val currentElement = Option(psiFile.findElementAt(editor.getCaretModel.getOffset)).
+            find(e => HaskellPsiUtil.findExpressionParent(e).isDefined).
+            flatMap(e => Option(PsiTreeUtil.prevVisibleLeaf(e))).filter(_.isValid)
           (psiFile, currentElement)
       }
     }
   }
 
   override def doAnnotate(psiFileElement: (PsiFile, Option[PsiElement])): CompilationResult = {
+    ProgressManager.checkCanceled()
     val psiFile = psiFileElement._1
     ApplicationManager.getApplication.invokeAndWait(() => {
       if (!psiFile.getProject.isDisposed) {
-        HaskellFileUtil.saveFile(psiFile)
+        ProgressManager.checkCanceled()
+        HaskellFileUtil.saveFile(psiFile, checkCancelled = true)
       }
     })
+    ProgressManager.checkCanceled()
     HaskellComponentsManager.loadHaskellFile(psiFile, psiFileElement._2).orNull
   }
 
@@ -79,7 +85,6 @@ class HaskellAnnotator extends ExternalAnnotator[(PsiFile, Option[PsiElement]), 
           intentionActions.foreach(annotation.registerFix)
       }
     }
-    HaskellAnnotator.restartDaemonCodeAnalyzerForFile(psiFile)
   }
 }
 
@@ -118,7 +123,7 @@ object HaskellAnnotator {
   }
 
   private def createAnnotations(psiFile: PsiFile, loadResult: CompilationResult): Iterable[Annotation] = {
-    val problems = loadResult.currentFileProblems.filter(_.filePath == HaskellFileUtil.getAbsoluteFilePath(psiFile))
+    val problems = loadResult.currentFileProblems.filter(problem => HaskellFileUtil.getAbsolutePath(psiFile).contains(problem.filePath))
     val project = psiFile.getProject
 
     HaskellCompilationResultHelper.createNotificationsForErrorsNotInCurrentFile(project, loadResult)
@@ -136,7 +141,7 @@ object HaskellAnnotator {
           tr =>
             val plainMessage = problem.plainMessage
             plainMessage match {
-              // Because of setting `-fdefer-typed-holes` the following problems are displayed as error
+              // Because of setting `-fdefer-type-errors` the following problems are displayed as error
               case PerhapsYouMeantSingleMultiplePattern(notInScopeMessage, suggestionsList) =>
                 createErrorAnnotationWithMultiplePerhapsIntentions(problem, tr, notInScopeMessage, suggestionsList)
               case PerhapsYouMeantMultiplePattern(notInScopeMessage, suggestionsList) =>
@@ -163,7 +168,7 @@ object HaskellAnnotator {
                 findSuggestedLanguageExtension(project, plainMessage) match {
                   case les if les.nonEmpty => createLanguageExtensionIntentionsAction(problem, tr, les)
                   case _ =>
-                    if (problem.isWarning)
+                    if (problem.isWarning && !plainMessage.startsWith("warning: [-Wdeferred-type-errors]") && !plainMessage.startsWith("warning: [-Wdeferred-type-holes]"))
                       WarningAnnotation(tr, problem.plainMessage, problem.htmlMessage)
                     else
                       ErrorAnnotation(tr, problem.plainMessage, problem.htmlMessage)
@@ -194,6 +199,8 @@ object HaskellAnnotator {
   }
 
   private def createNotInScopeIntentionActions(psiFile: PsiFile, name: String): Iterable[NotInScopeIntentionAction] = {
+    import scala.concurrent.ExecutionContext.Implicits.global
+
     val nameWithoutParens = StringUtil.removeOuterParens(name)
     val moduleIdentifiers = HaskellComponentsManager.findPreloadedModuleIdentifiers(psiFile.getProject).filter(_.name == nameWithoutParens)
     moduleIdentifiers.map(mi => new NotInScopeIntentionAction(mi.name, mi.moduleName, psiFile))
@@ -286,11 +293,12 @@ class LanguageExtensionIntentionAction(languageExtension: String) extends Haskel
   override def getFamilyName: String = "Add language extension"
 
   override def invoke(project: Project, editor: Editor, file: PsiFile): Unit = {
-    val languagePragmaElement = HaskellElementFactory.createLanguagePragma(project, s"{-# LANGUAGE $languageExtension #-} \n")
+    val languagePragmaElement = HaskellElementFactory.createLanguagePragma(project, s"{-# LANGUAGE $languageExtension #-}")
     Option(PsiTreeUtil.findChildOfType(file, classOf[HaskellFileHeader])) match {
       case Some(fh) =>
         val lastPragmaElement = PsiTreeUtil.findChildrenOfType(fh, classOf[HaskellFileHeaderPragma]).asScala.lastOption.orNull
-        fh.addAfter(languagePragmaElement, lastPragmaElement)
+        val newline = fh.addAfter(HaskellElementFactory.createNewLine(project), lastPragmaElement)
+        fh.addAfter(languagePragmaElement, newline)
       case None => Option(file.getFirstChild) match {
         case Some(c) =>
           val addedPragmaElement = file.addBefore(languagePragmaElement, c)

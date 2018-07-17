@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@
 package intellij.haskell.util
 
 import java.io.File
+import java.nio.file.Paths
 
 import com.intellij.openapi.module.{Module, ModuleManager, ModuleUtil, ModuleUtilCore}
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectRootManager
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.{LocalFileSystem, VirtualFile}
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.{PsiElement, PsiFile, PsiManager}
@@ -32,6 +34,12 @@ import intellij.haskell.sdk.HaskellSdkType
 object HaskellProjectUtil {
 
   final val Prelude = "Prelude"
+
+  def setNoDiagnosticsShowCaretFlag(project: Project): Boolean = {
+    HaskellProjectUtil.getGhcVersion(project).exists(ghcVersion =>
+      ghcVersion >= GhcVersion(8, 2, 1)
+    )
+  }
 
   def isValidHaskellProject(project: Project, notifyNoSdk: Boolean): Boolean = {
     val stackPath = HaskellSdkType.getStackPath(project, notifyNoSdk)
@@ -52,37 +60,32 @@ object HaskellProjectUtil {
 
   // File can both project and library file in multi package projects
   // Being project file is leading
-  def isLibraryFile(psiFile: PsiFile): Option[Boolean] = {
-    isProjectFile(psiFile).map(!_)
+  def isLibraryFile(psiFile: PsiFile): Boolean = {
+    !isProjectFile(psiFile)
   }
 
-  def isLibraryFile(virtualFile: VirtualFile, project: Project): Option[Boolean] = {
-    isProjectFile(virtualFile, project).map(!_)
+  /**
+    * findVirtualFile returns null when file is only in memory so then is must be a project file
+    */
+  def isProjectFile(psiFile: PsiFile): Boolean = {
+    HaskellFileUtil.findVirtualFile(psiFile).forall(vf => isProjectFile(vf, psiFile.getProject))
   }
 
-  def isProjectTestFile(psiFile: PsiFile): Option[Boolean] = {
-    HaskellFileUtil.findVirtualFile(psiFile).flatMap(vf => isProjectTestFile(vf, psiFile.getProject))
+  def isProjectFile(virtualFile: VirtualFile, project: Project): Boolean = {
+    if (project.isDisposed) {
+      false
+    } else {
+      FileUtil.isAncestor(Paths.get(project.getBasePath).toFile, Paths.get(virtualFile.getPath).toFile, true)
+    }
   }
 
-  def isProjectTestFile(virtualFile: VirtualFile, project: Project): Option[Boolean] = {
-    getProjectRootManager(project).map(_.getFileIndex.isInTestSourceContent(virtualFile))
-  }
-
-  def isProjectFile(psiFile: PsiFile): Option[Boolean] = {
-    HaskellFileUtil.findVirtualFile(psiFile).flatMap(vf => isProjectFile(vf, psiFile.getProject))
-  }
-
-  def isProjectFile(virtualFile: VirtualFile, project: Project): Option[Boolean] = {
-    getProjectRootManager(project).map(_.getFileIndex.isContentSourceFile(virtualFile))
-  }
-
-  def getModulePath(module: Module): File = {
+  def getModuleDir(module: Module): File = {
     new File(ModuleUtilCore.getModuleDirPath(module))
   }
 
   def findCabalFiles(project: Project): Iterable[File] = {
     val modules = findProjectModules(project)
-    val dirs = modules.map(getModulePath)
+    val dirs = modules.map(getModuleDir)
     dirs.flatMap(findCabalFile)
   }
 
@@ -94,8 +97,19 @@ object HaskellProjectUtil {
     directory.listFiles.find(_.getName == "stack.yaml")
   }
 
+  def findPackageFiles(project: Project): Iterable[File] = {
+    val modules = findProjectModules(project)
+    val dirs = modules.map(getModuleDir)
+    dirs.flatMap(findCabalFile)
+    dirs.flatMap(findPackageFile)
+  }
+
   def findStackFile(project: Project): Option[File] = {
     findStackFile(new File(project.getBasePath))
+  }
+
+  def findPackageFile(directory: File): Option[File] = {
+    directory.listFiles.find(_.getName == "package.yaml")
   }
 
   def getProjectModulesSearchScope(project: Project): GlobalSearchScope = {
@@ -113,8 +127,8 @@ object HaskellProjectUtil {
 
   import ScalaUtil._
 
-  def getProjectRootManager(project: Project): Option[ProjectRootManager] = {
-    project.isDisposed.optionNot(ProjectRootManager.getInstance(project))
+  def getProjectRootManager(project: Project): ProjectRootManager = {
+    ProjectRootManager.getInstance(project)
   }
 
   def getModuleManager(project: Project): Option[ModuleManager] = {
@@ -125,6 +139,14 @@ object HaskellProjectUtil {
     Option(ModuleUtilCore.findModuleForPsiElement(psiElement))
   }
 
+  def findModuleForFile(psiFile: PsiFile): Option[Module] = {
+    Option(ModuleUtilCore.findModuleForFile(psiFile))
+  }
+
+  def findModuleForVirtualFile(project: Project, virtualFile: VirtualFile): Option[Module] = {
+    Option(ModuleUtilCore.findModuleForFile(virtualFile, project))
+  }
+
   import scala.collection.JavaConverters._
 
   def findProjectModules(project: Project): Iterable[Module] = {
@@ -132,7 +154,7 @@ object HaskellProjectUtil {
   }
 
   def getGhcVersion(project: Project): Option[GhcVersion] = {
-    StackCommandLine.runCommand(project, Seq("exec", "--", "ghc", "--numeric-version"))
+    StackCommandLine.run(project, Seq("exec", "--", "ghc", "--numeric-version"))
       .map(o => GhcVersion.parse(o.getStdout.trim))
   }
 

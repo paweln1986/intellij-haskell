@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,23 +16,19 @@
 
 package intellij.haskell.external.execution
 
-import com.intellij.execution.process.ProcessOutput
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import intellij.haskell.HaskellNotificationGroup
 import intellij.haskell.util.{HaskellFileUtil, StringUtil}
 
-import scala.collection.JavaConverters._
-
 object HaskellCompilationResultHelper {
 
   private final val ProblemPattern = """(.+):([\d]+):([\d]+):(.+)""".r
 
-  def createCompilationResult(currentPsiFile: Option[PsiFile], errorLines: Seq[String], failed: Boolean): CompilationResult = {
-    val filePath = currentPsiFile.map(HaskellFileUtil.getAbsoluteFilePath)
+  def createCompilationResult(currentPsiFile: PsiFile, errorLines: Seq[String], failed: Boolean): CompilationResult = {
+    val filePath = HaskellFileUtil.getAbsolutePath(currentPsiFile).getOrElse(throw new IllegalStateException(s"File `${currentPsiFile.getName}` exists only in memory"))
 
-    // `distinct` because of https://github.com/commercialhaskell/intero/issues/258
-    val compilationProblems = errorLines.distinct.flatMap(l => parseErrorLine(filePath, l))
+    val compilationProblems = errorLines.flatMap(l => parseErrorLine(Some(filePath), l))
 
     val currentFileProblems = compilationProblems.flatMap(convertToCompilationProblemInCurrentFile)
     val otherFileProblems = compilationProblems.diff(currentFileProblems)
@@ -48,12 +44,6 @@ object HaskellCompilationResultHelper {
         case _ => ()
       }
     }
-  }
-
-  def showBuildErrors(project: Project, currentPsiFile: Option[PsiFile], processOutput: ProcessOutput): Unit = {
-    val stderrLines = StringUtil.joinIndentedLines(project, processOutput.getStderrLines.asScala)
-    val result = createCompilationResult(currentPsiFile, stderrLines, processOutput.getExitCode > 0)
-    createNotificationsForErrorsNotInCurrentFile(project, result)
   }
 
   private def convertToCompilationProblemInCurrentFile(problem: CompilationProblem) = {

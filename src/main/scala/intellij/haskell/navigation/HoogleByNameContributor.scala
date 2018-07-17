@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,15 @@
 
 package intellij.haskell.navigation
 
-import javax.swing.Icon
-
 import com.intellij.navigation.{ChooseByNameContributor, ItemPresentation, NavigationItem}
 import com.intellij.openapi.progress.ProgressManager
-import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.{DumbService, Project}
+import intellij.haskell.external.component.NameInfoComponentResult.{LibraryNameInfo, ProjectNameInfo}
 import intellij.haskell.external.component._
 import intellij.haskell.psi.{HaskellDeclarationElement, HaskellPsiUtil}
-import intellij.haskell.util.StringUtil
 import intellij.haskell.util.index.HaskellModuleNameIndex
+import intellij.haskell.util.{ScalaUtil, StringUtil}
+import javax.swing.Icon
 
 class HoogleByNameContributor extends ChooseByNameContributor {
 
@@ -51,7 +51,7 @@ class HoogleByNameContributor extends ChooseByNameContributor {
     val navigationItems = HoogleComponent.runHoogle(project, hooglePattern, count = 100000).getOrElse(Seq()).flatMap {
       case ModulePattern(moduleName) =>
         ProgressManager.checkCanceled()
-        HaskellModuleNameIndex.findHaskellFilesByModuleNameInAllScope(project, moduleName)
+        Option(DumbService.getInstance(project).tryRunReadActionInSmartMode(ScalaUtil.computable(HaskellModuleNameIndex.findHaskellFilesByModuleNameInAllScope(project, moduleName)), "Hoogle not available until indices are ready")).getOrElse(Iterable())
       case PackagePattern(packageName) =>
         ProgressManager.checkCanceled()
         Iterable(NotFoundNavigationItem(packageName))
@@ -59,14 +59,15 @@ class HoogleByNameContributor extends ChooseByNameContributor {
         ProgressManager.checkCanceled()
         DeclarationLineUtil.findName(declaration).map(nd => {
           val name = StringUtil.removeOuterParens(nd.name)
-          val navigationItemByNameInfo = HaskellComponentsManager.findNameInfoByModuleName(project, moduleName, name).headOption.flatMap {
-            case lni: LibraryNameInfo => HaskellReference.findIdentifiersByLibraryNameInfo(lni, name, project, None, preferExpressions = false).
+          val result = HaskellComponentsManager.findNameInfoByModuleName(project, moduleName, name)
+          val navigationItemByNameInfo = result.toOption.flatMap(_.headOption) match {
+            case Some(lni: LibraryNameInfo) => HaskellReference.findIdentifiersByLibraryNameInfo(project, None, lni, name).
               headOption.flatMap(HaskellPsiUtil.findDeclarationElementParent).map(d => createLibraryNavigationItem(d, moduleName))
-            case pni: ProjectNameInfo => HaskellReference.findIdentifierByLocation(pni.filePath, pni.lineNr, pni.columnNr, name, project).flatMap(HaskellPsiUtil.findDeclarationElementParent)
+            case Some(pni: ProjectNameInfo) => HaskellReference.findIdentifierByLocation(project, pni.filePath, pni.lineNr, pni.columnNr, name)._2.flatMap(HaskellPsiUtil.findDeclarationElementParent)
             case _ => None
           }
           navigationItemByNameInfo.orElse {
-            val identifier = HaskellReference.findIdentifiersByModuleName(moduleName, name, project, None, preferExpressions = false).headOption
+            val identifier = HaskellReference.findIdentifiersByModuleAndName(project, None, moduleName, name).headOption
             if (identifier.isEmpty) {
               NotFoundResult(moduleName, declaration)
             } else {
@@ -123,7 +124,7 @@ class HoogleByNameContributor extends ChooseByNameContributor {
     override def getName: String = declaration
 
     override def getPresentation: ItemPresentation = new ItemPresentation {
-      override def getIcon(unused: Boolean) = null
+      override def getIcon(unused: Boolean): Icon = null
 
       override def getLocationString: String = moduleName.getOrElse("")
 

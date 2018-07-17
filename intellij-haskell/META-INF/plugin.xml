@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>intellij.haskell</id>
     <name>IntelliJ-Haskell</name>
-    <version>1.0.0-beta12</version>
+    <version>1.0.0-beta19</version>
     <vendor email="rikvdkleij@gmail.com">Rik van der Kleij</vendor>
 
     <description><![CDATA[
@@ -11,6 +11,21 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <p>1.0.0-beta19</p>
+        <b>IMPORTANT: Stack version should be > 1.7.0 and please reimport your Haskell Stack project after updating the plugin.</b>
+        <ul>
+            <li>Improved responsiveness, especially for multi-package projects</li>
+            <li>HLint, Hoogle, Hindent and Stylish-Haskell are automatically installed in IntelliJ sandbox with LTS-11. Those binaries are used by all projects</li>
+            <li>Added option to Tools/Haskell menu to update Haskell tools with latest LTS-11 version</li>
+            <li>Various improvements and fixes</li>
+            <li>Improved REPL (@solicode)</li>
+            <li>Improved importer of multi-package projects</li>
+            <li>Improved parser</li>
+            <li>Included updating the Module Settings to the Restart REPLs action</li>
+            <li>Changed default reformat shortcut to reformat by Hindent. Also added option to Commit Changes dialog to reformat by Hindent</li>
+            <li>Added option to Commit Changes dialog to optimize imports by GHC warnings</li>
+            <li>Added type and definition info of the current identifier to the Documentation Tool window. That info is always up-to-date by enabling option `Auto-update from Source`</li>
+        </ul>
         <p>1.0.0-beta12</p>
         <ul>
             <li>Various improvements and fixes</li>
@@ -219,7 +234,8 @@
         <renamePsiElementProcessor implementation="intellij.haskell.refactor.HaskellRenameFileProcessor"/>
         <renamePsiElementProcessor implementation="intellij.haskell.refactor.HaskellRenameVariableProcessor"/>
         <renameInputValidator implementation="intellij.haskell.refactor.HaskellRenameInputValidator"/>
-        <lang.elementManipulator forClass="intellij.haskell.psi.HaskellNamedElement" implementationClass="intellij.haskell.psi.HaskellNamedElementManipulator"/>
+        <lang.elementManipulator forClass="intellij.haskell.psi.HaskellNamedElement"
+                                 implementationClass="intellij.haskell.psi.HaskellNamedElementManipulator"/>
         <lang.namesValidator language="Haskell" implementationClass="intellij.haskell.refactor.HaskellNamesValidator"/>
 
         <!-- Commenter -->
@@ -243,7 +259,7 @@
                                  implementationClass="intellij.haskell.navigation.HaskellFindUsagesProvider"/>
 
         <!-- Navigation -->
-        <gotoClassContributor  implementation="intellij.haskell.navigation.GotoByDeclarationContributor"/>
+        <gotoClassContributor implementation="intellij.haskell.navigation.GotoByDeclarationContributor"/>
         <gotoSymbolContributor implementation="intellij.haskell.navigation.GotoByNameContributor"/>
 
         <!-- Annotator -->
@@ -264,7 +280,8 @@
         <!-- Handler -->
         <typedHandler implementation="intellij.haskell.editor.HaskellTypedHandler" id="HaskellFile"/>
         <extendWordSelectionHandler implementation="intellij.haskell.editor.HaskellExtendWordSelectioner"/>
-        <enterHandlerDelegate implementation="intellij.haskell.editor.EnterInHaddockHandler" id="EnterInHaddockHandler"/>
+        <enterHandlerDelegate implementation="intellij.haskell.editor.EnterInHaddockHandler"
+                              id="EnterInHaddockHandler"/>
         <quoteHandler fileType="Haskell file" className="intellij.haskell.editor.HaskellQuoteHandler"/>
 
         <!-- Code Style -->
@@ -278,7 +295,8 @@
         <colorSettingsPage implementation="intellij.haskell.cabal.highlighting.CabalColorSettingsPage"/>
 
         <!-- Inspection -->
-        <localInspection runForWholeFile="false" language="Haskell" shortName="HLintInspection" displayName="Inspection by HLint"
+        <localInspection runForWholeFile="false" language="Haskell" shortName="HLintInspection"
+                         displayName="Inspection by HLint"
                          groupName="Haskell" enabledByDefault="true" level="WARNING"
                          implementationClass="intellij.haskell.inspection.HLintInspectionTool"/>
 
@@ -298,7 +316,6 @@
         <projectImportBuilder implementation="intellij.haskell.module.StackProjectImportBuilder"/>
 
         <!-- Index -->
-        <fileBasedIndex implementation="intellij.haskell.util.index.HaskellFileNameIndex"/>
         <fileBasedIndex implementation="intellij.haskell.util.index.HaskellModuleNameIndex"/>
         <stubIndex implementation="intellij.haskell.psi.stubs.index.HaskellAllNameIndex"/>
         <stubElementTypeHolder class="intellij.haskell.psi.HaskellTypes"/>
@@ -327,11 +344,16 @@
         <actionPromoter implementation="intellij.haskell.runconfig.console.HaskellConsoleActionPromoter"/>
         <configurationType implementation="intellij.haskell.runconfig.HaskellStackConfigurationType"/>
         <!-- Notification -->
-        <editorNotificationProvider implementation="intellij.haskell.notification.ConfigFileWatcherNotificationProvider"/>
+        <editorNotificationProvider
+                implementation="intellij.haskell.notification.ConfigFileWatcherNotificationProvider"/>
         <editorNotificationProvider implementation="intellij.haskell.notification.SetupHaskellSdkNotificationProvider"/>
 
         <!-- Mover -->
         <!--<statementUpDownMover implementation="intellij.haskell.editor.HaskellStatementMover"/>-->
+
+        <checkinHandlerFactory implementation="intellij.haskell.action.HaskellReformatCheckinHandlerFactory"/>
+        <checkinHandlerFactory implementation="intellij.haskell.action.HaskellOptimizeImportsCheckinHandlerFactory"/>
+
     </extensions>
 
     <application-components>
@@ -344,7 +366,8 @@
         </component>
 
         <component>
-            <implementation-class>intellij.haskell.external.component.HaskellDocumentationProvider </implementation-class>
+            <implementation-class>intellij.haskell.external.component.HaskellDocumentationProvider
+            </implementation-class>
         </component>
     </project-components>
 
@@ -403,62 +426,68 @@
 
         <group id="HaskellGhciMenu" text="GHCi" description="GHCi" popup="true">
             <action id="Haskell.SendToGhci" class="intellij.haskell.action.ghci.SendToConsoleAction"
-                    text="Send to GHCi" description="Execute selected command in GHCi" />
+                    text="Send to GHCi" description="Execute selected command in GHCi"/>
 
             <action id="Haskell.Ghci.LoadModule" class="intellij.haskell.action.ghci.LoadModuleAction"
-                    text="Load module in GHCi" description="Load currently selected module in GHCi" />
+                    text="Load module in GHCi" description="Load currently selected module in GHCi"/>
 
             <action id="Haskell.Ghci.ReloadModules" class="intellij.haskell.action.ghci.ReloadModulesAction"
-                    text="Reload modules in GHCi" description="Reload the current module set in GHCi" />
+                    text="Reload modules in GHCi" description="Reload the current module set in GHCi"/>
 
-            <action id="Haskell.Ghci.ReloadWithLastCommand" class="intellij.haskell.action.ghci.ReloadWithLastCommandAction"
-                    text="Reload GHCi with last command" description="Re-execute last command after reloading modules" />
+            <action id="Haskell.Ghci.ReloadWithLastCommand"
+                    class="intellij.haskell.action.ghci.ReloadWithLastCommandAction"
+                    text="Reload GHCi with last command" description="Re-execute last command after reloading modules"/>
         </group>
 
-        <group id="HaskellToolsMenu" text="Haskell" description="Haskell Tools" icon="/icons/haskell@16.png" popup="true">
+        <group id="HaskellToolsMenu" text="Haskell" description="Haskell Tools" icon="/icons/haskell@16.png"
+               popup="true">
             <action id="Haskell.DownloadLibSources" class="intellij.haskell.action.DownloadLibrarySources"
                     text="Download Haskell Library Sources"
                     description="Download Haskell library sources and add them as source libraries to project">
             </action>
 
             <action id="Haskell.RestartStackRepl" class="intellij.haskell.action.RestartStackReplsAction"
-                    text="Restart Haskell Stack REPLs"
-                    description="Restart Haskell Stack REPLs and refresh cache">
+                    text="Update Settings and restart REPLs"
+                    description="Update Module Settings and restart REPLs">
             </action>
 
             <action id="Haskell.BuildHoogleDatabase" class="intellij.haskell.action.BuildHoogleDbAction"
                     text="(Re)Build Hoogle database"
                     description="(Re)Generate Haskell documentation and (re)build local Hoogle database">
             </action>
+
+            <action id="Haskell.UpdateHaskellTools" class="intellij.haskell.action.UpdateHaskellToolsAction"
+                    text="Update Haskell Tools"
+                    description="Update Haskell Tools with latest version of LTS-11">
+            </action>
             <add-to-group group-id="ToolsMenu" anchor="first"/>
             <reference id="HaskellGhciMenu"/>
         </group>
 
-        <group id="HaskellCodeMenu" text="Haskell" description="Haskell Code Tools" icon="/icons/haskell@16.png" popup="true">
-            <action id="Haskell.HindentFormat"
-                    class="intellij.haskell.action.HindentFormatAction"
-                    text="Reformat Code with Hindent"
-                    description="Format current file with hindent">
-                <keyboard-shortcut first-keystroke="ctrl alt k" keymap="$default"/>
-            </action>
+        <!-- Overriding IntelliJ's default shortcut for formatting -->
+        <action id="ReformatCode" class="intellij.haskell.action.HindentFormatAction"
+                description="Reformat code by Hindent"/>
 
+        <group id="HaskellCodeMenu" text="Haskell" description="Haskell Code Tools" icon="/icons/haskell@16.png"
+               popup="true">
             <action id="Haskell.StylishHaskellFormat"
                     class="intellij.haskell.action.StylishHaskellFormatAction"
-                    text="Reformat Code with Stylish-haskell"
-                    description="Format current file with stylish-haskell">
+                    text="Reformat code by Stylish-Haskell"
+                    description="Reformat current file by Stylish-Haskell">
                 <keyboard-shortcut first-keystroke="ctrl alt u" keymap="$default"/>
             </action>
 
             <action id="Haskell.HaskellFormat"
                     class="intellij.haskell.action.HaskellFormatAction"
-                    text="Reformat Code with Hindent and then Stylish-haskell"
-                    description="Format current file with hindent and then stylish-haskell">
+                    text="Reformat code by Hindent and then Stylish-Haskell"
+                    description="Reformat current file by Hindent and then Stylish-Haskell">
                 <keyboard-shortcut first-keystroke="ctrl alt SEMICOLON" keymap="$default"/>
             </action>
             <add-to-group group-id="CodeMenu" anchor="last"/>
         </group>
 
-        <group id="HaskellGoToMenu" text="Haskell" description="Haskell Goto Tools" icon="/icons/haskell@16.png" popup="true">
+        <group id="HaskellGoToMenu" text="Haskell" description="Haskell Goto Tools" icon="/icons/haskell@16.png"
+               popup="true">
             <action id="Haskell.Hoogle.Navigation"
                     class="intellij.haskell.action.HoogleNavigationAction"
                     text="Navigation by Hoogle"

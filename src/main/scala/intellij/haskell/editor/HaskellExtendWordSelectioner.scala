@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ import scala.collection.mutable.ListBuffer
 class HaskellExtendWordSelectioner extends ExtendWordSelectionHandler {
 
   override def canSelect(e: PsiElement): Boolean = {
-    Option(e.getContainingFile).exists(_.isInstanceOf[HaskellFile]) || !(e.isInstanceOf[PsiComment] || e.isInstanceOf[PsiWhiteSpace])
+    Option(e.getContainingFile).exists(_.isInstanceOf[HaskellFile]) && !e.isInstanceOf[PsiComment] && !e.isInstanceOf[PsiWhiteSpace]
   }
 
   override def select(e: PsiElement, editorText: CharSequence, cursorOffset: Int, editor: Editor): util.List[TextRange] = {

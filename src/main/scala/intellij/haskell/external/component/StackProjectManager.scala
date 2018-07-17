@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,16 +18,20 @@ package intellij.haskell.external.component
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.ProjectComponent
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.{PerformInBackgroundOption, ProgressIndicator, ProgressManager, Task}
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.{ModifiableRootModel, ModuleRootModificationUtil}
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.VirtualFileManager
-import intellij.haskell.HaskellNotificationGroup
+import intellij.haskell.action.{HindentFormatAction, StylishHaskellFormatAction}
+import intellij.haskell.annotator.HaskellAnnotator
 import intellij.haskell.external.execution.StackCommandLine
-import intellij.haskell.external.execution.StackCommandLine.executeBuild
-import intellij.haskell.external.repl.{GlobalStackRepl, StackReplsManager}
+import intellij.haskell.external.execution.StackCommandLine.build
+import intellij.haskell.external.repl.StackReplsManager
 import intellij.haskell.module.HaskellModuleBuilder
-import intellij.haskell.util.HaskellProjectUtil
+import intellij.haskell.util._
+import intellij.haskell.{GlobalInfo, HaskellNotificationGroup}
 
 object StackProjectManager {
 
@@ -49,6 +53,18 @@ object StackProjectManager {
     getStackProjectManager(project).exists(_.hlintAvailable)
   }
 
+  def isStylishHaskellAvailable(project: Project): Boolean = {
+    getStackProjectManager(project).exists(_.stylishHaskellAvailable)
+  }
+
+  def isHindentAvailable(project: Project): Boolean = {
+    getStackProjectManager(project).exists(_.hindentAvailable)
+  }
+
+  def isInstallingHaskellTools(project: Project): Boolean = {
+    getStackProjectManager(project).exists(_.installingHaskellTools)
+  }
+
   def start(project: Project): Unit = {
     init(project)
   }
@@ -61,90 +77,150 @@ object StackProjectManager {
     project.isDisposed.optionNot(project.getComponent(classOf[StackProjectManager]))
   }
 
+  def installHaskellTools(project: Project, update: Boolean): Unit = {
+    getStackProjectManager(project).foreach(_.installingHaskellTools = true)
+
+    val title = (if (update) "Updating" else "Installing") + " Haskell tools"
+
+    ProgressManager.getInstance().run(new Task.Backgroundable(project, title, false, PerformInBackgroundOption.ALWAYS_BACKGROUND) {
+
+      private def isToolAvailable(progressIndicator: ProgressIndicator, toolName: String) = {
+        if (!GlobalInfo.toolPath(toolName).toFile.exists() || update) {
+          progressIndicator.setText(s"Busy with installing $toolName in ${GlobalInfo.toolsBinPath}")
+          StackCommandLine.installTool(project, toolName)
+        } else {
+          true
+        }
+      }
+
+      override def run(progressIndicator: ProgressIndicator): Unit = {
+        try {
+          if (update) {
+            progressIndicator.setText(s"Busy with updating Stack's package index")
+            StackCommandLine.updateStackIndex(project)
+          }
+
+          getStackProjectManager(project).foreach(_.hlintAvailable = isToolAvailable(progressIndicator, HLintComponent.HLintName))
+
+          getStackProjectManager(project).foreach(_.hoogleAvailable = isToolAvailable(progressIndicator, HoogleComponent.HoogleName))
+
+          getStackProjectManager(project).foreach(_.stylishHaskellAvailable = isToolAvailable(progressIndicator, StylishHaskellFormatAction.StylishHaskellName))
+
+          getStackProjectManager(project).foreach(_.hindentAvailable = isToolAvailable(progressIndicator, HindentFormatAction.HindentName))
+        } finally {
+          getStackProjectManager(project).foreach(_.installingHaskellTools = false)
+        }
+      }
+    })
+  }
+
   private def init(project: Project, restart: Boolean = false): Unit = {
     if (HaskellProjectUtil.isValidHaskellProject(project, notifyNoSdk = true)) {
       if (isInitializing(project)) {
         HaskellNotificationGroup.logWarningBalloonEvent(project, "Action is not possible because project is initializing")
       } else {
         HaskellNotificationGroup.logInfoEvent(project, "Initializing Haskell project")
+        getStackProjectManager(project).foreach(_.initializing = true)
+        getStackProjectManager(project).foreach(_.building = true)
 
-        ProgressManager.getInstance().run(new Task.Backgroundable(project, "Building project, starting REPL(s), building tools and preloading cache", false, PerformInBackgroundOption.DEAF) {
+        installHaskellTools(project, update = false)
+
+        ProgressManager.getInstance().run(new Task.Backgroundable(project, "Building project, starting REPL(s) and preloading cache", false, PerformInBackgroundOption.ALWAYS_BACKGROUND) {
 
           def run(progressIndicator: ProgressIndicator) {
-            getStackProjectManager(project).foreach(_.initializing = true)
-            getStackProjectManager(project).foreach(_.building = true)
             try {
               try {
-                progressIndicator.setText("Busy with building project")
+                progressIndicator.setText("Busy with building project's dependencies")
+                val dependenciesBuildResult = StackCommandLine.buildProjectDependenciesInMessageView(project)
 
-                val result = StackCommandLine.buildProjectDependenciesInMessageView(project, progressIndicator)
-                if (result.contains(true)) {
-                  StackCommandLine.buildProjectInMessageView(project, progressIndicator)
+                progressIndicator.setText(s"Busy with building Intero")
+                build(project, Seq("intero"), logBuildResult = true)
+
+                if (dependenciesBuildResult.contains(true)) {
+                  progressIndicator.setText("Busy with building project")
+                  StackCommandLine.buildProjectInMessageView(project)
                 } else {
-                  HaskellNotificationGroup.logInfoEvent(project, "Did not build project because building project it's dependencies failed")
+                  HaskellNotificationGroup.logErrorBalloonEvent(project, "Project will not be built because building it's dependencies failed")
+                }
+
+                if (!project.isDisposed) {
+                  ApplicationManager.getApplication.getMessageBus.connect(project).subscribe(VirtualFileManager.VFS_CHANGES, new ProjectLibraryFileWatcher(project))
                 }
 
                 if (restart) {
-                  val projectRepl = StackReplsManager.getProjectLibraryRepl(project)
-                  val projectTestRepl = StackReplsManager.getProjectNonLibraryRepl(project)
+                  val projectRepsl = StackReplsManager.getRunningProjectRepls(project)
                   progressIndicator.setText("Busy with stopping Stack REPLs")
                   StackReplsManager.getGlobalRepl(project).foreach(_.exit())
-                  projectRepl.foreach(_.exit())
-                  projectRepl.foreach(_.clearLoadedInfo())
-                  projectTestRepl.foreach(_.exit())
-                  projectTestRepl.foreach(_.clearLoadedInfo())
+                  projectRepsl.foreach(_.exit())
 
                   progressIndicator.setText("Busy with cleaning up cache")
                   HaskellComponentsManager.invalidateGlobalCaches(project)
 
-                  ApplicationManager.getApplication.runReadAction(new Runnable {
-
-                    override def run(): Unit = {
-                      getStackProjectManager(project).foreach(_.initStackReplsManager())
-                    }
+                  ApplicationManager.getApplication.runReadAction(ScalaUtil.runnable {
+                    getStackProjectManager(project).foreach(_.initStackReplsManager())
                   })
-                }
 
-                progressIndicator.setText(s"Busy with building intero ")
-                executeBuild(project, Seq("intero"), "intero", notifyBalloonError = true)
+                  progressIndicator.setText("Busy with updating module settings")
+                  StackReplsManager.getReplsManager(project).map(_.moduleCabalInfos).foreach { moduleCabalInfos =>
+                    moduleCabalInfos.foreach { case (module, cabalInfo) =>
+                      ModuleRootModificationUtil.updateModel(module, (modifiableRootModel: ModifiableRootModel) => {
+                        modifiableRootModel.getContentEntries.headOption.foreach { contentEntry =>
+                          contentEntry.clearSourceFolders()
+                          HaskellModuleBuilder.addSourceFolders(cabalInfo, contentEntry)
+                        }
+                      })
+                    }
+                  }
+
+                  progressIndicator.setText("Busy with downloading library sources")
+                  HaskellModuleBuilder.addLibrarySources(project, update = true)
+                }
 
                 progressIndicator.setText("Busy with starting global Stack REPL")
                 StackReplsManager.getGlobalRepl(project).foreach(_.start())
               } finally {
                 getStackProjectManager(project).foreach(_.building = false)
-                ApplicationManager.getApplication.getMessageBus.connect(project).subscribe(VirtualFileManager.VFS_CHANGES, new ProjectLibraryFileWatcher(project))
+              }
+
+              // Force to load the module in REPL when REPL can be started. It could have happen that IntelliJ wanted to load file (via HaskellAnnotator)
+              // but REPL could not be started.
+              FileEditorManager.getInstance(project).getSelectedFiles.find(f => HaskellProjectUtil.isProjectFile(f, project)).foreach { vf =>
+                ApplicationUtil.runReadActionWithWriteActionPriority(project, HaskellFileUtil.convertToHaskellFile(project, vf)).foreach(psiFile => {
+                  if (!LoadComponent.isFileLoaded(psiFile)) {
+                    HaskellNotificationGroup.logInfoEvent(project, s"${psiFile.getName} will be forced loaded")
+                    HaskellAnnotator.restartDaemonCodeAnalyzerForFile(psiFile)
+                  }
+                })
               }
 
               progressIndicator.setText("Busy with downloading library sources")
-              HaskellModuleBuilder.addLibrarySources(project)
+              HaskellModuleBuilder.addLibrarySources(project, update = false)
 
               progressIndicator.setText("Busy with preloading libraries")
-              val preloadCacheFuture = ApplicationManager.getApplication.executeOnPooledThread(new Runnable {
+              val preloadCacheFuture = ApplicationManager.getApplication.executeOnPooledThread(ScalaUtil.runnable {
+                HaskellComponentsManager.preloadLibraryIdentifiersCaches(project)
 
-                override def run(): Unit = {
-                  HaskellComponentsManager.preloadLibraryIdentifiersCaches(project)
-
-                  HaskellNotificationGroup.logInfoEvent(project, "Restarting global REPL to release memory")
-                  StackReplsManager.getGlobalRepl(project).foreach(_.restart())
-                }
+                HaskellNotificationGroup.logInfoEvent(project, "Restarting global REPL to release memory")
+                StackReplsManager.getGlobalRepl(project).foreach(_.restart())
               })
-
-              progressIndicator.setText(s"Busy with building ${HLintComponent.HlintName}")
-              StackCommandLine.executeBuild(project, Seq(HLintComponent.HlintName), HLintComponent.HlintName, notifyBalloonError = true)
-              getStackProjectManager(project).foreach(_.hlintAvailable = true)
-
-              progressIndicator.setText(s"Busy with building ${HoogleComponent.HoogleName}")
-              StackCommandLine.executeBuild(project, Seq(HoogleComponent.HoogleName), HoogleComponent.HoogleName, notifyBalloonError = true)
-              getStackProjectManager(project).foreach(_.hoogleAvailable = true)
-
 
               if (!HoogleComponent.doesHoogleDatabaseExist(project)) {
                 HoogleComponent.showHoogleDatabaseDoesNotExistNotification(project)
               }
 
+              StackReplsManager.getReplsManager(project).foreach(_.moduleCabalInfos.foreach { case (module, cabalInfo) =>
+                val intersection = cabalInfo.sourceRoots.toSeq.intersect(cabalInfo.testSourceRoots.toSeq)
+                if (intersection.nonEmpty) {
+                  intersection.foreach(p => {
+                    val moduleName = module.getName
+                    HaskellNotificationGroup.logWarningBalloonEvent(project, s"Source folder `$p` of module `$moduleName` is defined as Source and as Test Source")
+                  })
+                }
+              })
+
               progressIndicator.setText("Busy with preloading libraries")
               if (!preloadCacheFuture.isDone) {
-                preloadCacheFuture.get
+                FutureUtil.waitForValue(project, preloadCacheFuture, "preloading libraries", 600)
               }
             }
             finally {
@@ -158,8 +234,6 @@ object StackProjectManager {
 }
 
 class StackProjectManager(project: Project) extends ProjectComponent {
-
-  import intellij.haskell.settings.HaskellSettingsState
 
   override def getComponentName: String = "stack-project-manager"
 
@@ -176,21 +250,30 @@ class StackProjectManager(project: Project) extends ProjectComponent {
   private var hlintAvailable = false
 
   @volatile
-  private var replsManager: StackReplsManager = _
+  private var stylishHaskellAvailable = false
 
-  def getStackReplsManager: StackReplsManager = {
+  @volatile
+  private var hindentAvailable = false
+
+  @volatile
+  private var installingHaskellTools = false
+
+  @volatile
+  private var replsManager: Option[StackReplsManager] = None
+
+  def getStackReplsManager: Option[StackReplsManager] = {
     replsManager
   }
 
   def initStackReplsManager(): Unit = {
-    replsManager = new StackReplsManager(project, new GlobalStackRepl(project, HaskellSettingsState.getReplTimeout), None, None)
+    replsManager = Option(new StackReplsManager(project))
   }
 
   override def projectClosed(): Unit = {
     if (HaskellProjectUtil.isHaskellProject(project)) {
-      replsManager.getGlobalRepl.exit()
-      replsManager.getProjectLibraryRepl.foreach(_.exit())
-      replsManager.getProjectNonLibraryRepl.foreach(_.exit())
+      replsManager.foreach(_.getGlobalRepl.exit())
+      replsManager.foreach(_.getRunningProjectRepls.foreach(_.exit()))
+      HaskellComponentsManager.invalidateGlobalCaches(project)
     }
   }
 
@@ -199,8 +282,8 @@ class StackProjectManager(project: Project) extends ProjectComponent {
   override def projectOpened(): Unit = {
     if (HaskellProjectUtil.isHaskellProject(project)) {
       initStackReplsManager()
-      if (replsManager.stackComponentInfos.isEmpty) {
-        Messages.showErrorDialog(project, s"Can not start project because Stack/Cabal info can not be retrieved", "Can not start project")
+      if (replsManager.exists(_.stackComponentInfos.isEmpty)) {
+        Messages.showErrorDialog(project, s"Can not start project because no Cabal file was found or could not be read", "Can not start project")
       } else {
         StackProjectManager.start(project)
       }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,25 +16,28 @@
 
 package intellij.haskell.external.component
 
-import java.util.regex.Pattern
+import java.io.File
+import java.nio.file.Paths
 
-import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.execution.process.ProcessOutput
+import com.intellij.lang.documentation.DocumentationMarkup
 import com.intellij.openapi.project.Project
-import intellij.haskell.HaskellNotificationGroup
-import intellij.haskell.external.execution.StackCommandLine
+import intellij.haskell.external.execution.{CommandLine, StackCommandLine}
+import intellij.haskell.psi.{HaskellPsiUtil, HaskellQualifiedNameElement}
+import intellij.haskell.util.{HaskellProjectUtil, HtmlElement}
+import intellij.haskell.{GlobalInfo, HaskellNotificationGroup}
 
 import scala.collection.JavaConverters._
-import scala.concurrent.duration._
 
 object HoogleComponent {
 
   final val HoogleName = "hoogle"
-
-  private val Timout = 10.seconds.toMillis
+  private final val HooglePath = GlobalInfo.toolPath(HoogleName).toString
+  private final val HoogleDbName = "hoogle"
 
   def runHoogle(project: Project, pattern: String, count: Int = 100): Option[Seq[String]] = {
     if (isHoogleFeatureAvailable(project)) {
-      StackCommandLine.runCommand(project, Seq(HoogleName, "--", s""""$pattern"""", s"--count=$count"), timeoutInMillis = Timout).
+      runHoogle(project, Seq( s""""$pattern"""", s"--count=$count")).
         map(o =>
           if (o.getStdoutLines.isEmpty || o.getStdout.contains("No results found"))
             Seq()
@@ -49,47 +52,94 @@ object HoogleComponent {
     }
   }
 
-  def findDocumentation(project: Project, name: String, moduleName: Option[String]): Option[String] = {
+  def findDocumentation(project: Project, qualifiedNameElement: HaskellQualifiedNameElement): Option[String] = {
     if (isHoogleFeatureAvailable(project)) {
-      StackCommandLine.runCommand(project, Seq(HoogleName, "--", name) ++ moduleName.map(mn => Seq(s"+$mn", "-i")).getOrElse(Seq()), timeoutInMillis = Timout).
-        flatMap(processOutput =>
-          if (processOutput.getStdoutLines.isEmpty || processOutput.getStdout.contains("No results found")) {
-            None
-          } else {
-            // Remove excessive newlines that Hoogle outputs
-            val cleanOutput = processOutput.getStdout.trim.replaceAll("\n{3,}", "\n\n")
-            Some(s"${Pattern.compile("$", Pattern.MULTILINE).matcher(cleanOutput).replaceAll("<br>").replace(" ", "&nbsp;")}")
+      val name = qualifiedNameElement.getIdentifierElement.getName
+      Option(qualifiedNameElement.getContainingFile).flatMap { psiFile =>
+        if (HaskellProjectUtil.isProjectFile(psiFile)) {
+          DefinitionLocationComponent.findDefinitionLocation(psiFile, qualifiedNameElement, isCurrentFile = true) match {
+            case Left(noInfo) =>
+              HaskellNotificationGroup.logWarningEvent(project, s"No documentation because no location info could be found for identifier `$name` because ${noInfo.message}")
+              None
+            case Right(info) =>
+              info.moduleName match {
+                case None =>
+                  HaskellNotificationGroup.logWarningEvent(project, s"No documentation because could not find module for identifier `$name`")
+                  None
+                case Some(moduleName) => HoogleComponent.createDocumentation(project, name, moduleName)
+              }
           }
-        )
+        } else {
+          val moduleName = HaskellPsiUtil.findModuleName(psiFile)
+          moduleName.flatMap(mn => createDocumentation(project, name, mn))
+        }
+      }
     } else {
-      None
+      Some("No documentation because Hoogle (database) is not available")
     }
+  }
+
+  private def createDocumentation(project: Project, name: String, moduleName: String): Option[String] = {
+    def mkString(lines: Seq[String]) = {
+      lines.mkString("\n").
+        replace("<", HtmlElement.Lt).
+        replace(">", HtmlElement.Gt)
+    }
+
+    runHoogle(project, Seq(name, "-i", s"+$moduleName")).
+      flatMap(processOutput =>
+        if (processOutput.getStdoutLines.isEmpty || processOutput.getStdout.contains("No results found")) {
+          None
+        } else {
+          val output = processOutput.getStdoutLines
+          val (definition, content) = output.asScala.splitAt(2)
+          Some(
+            DocumentationMarkup.DEFINITION_START +
+              mkString(definition) +
+              DocumentationMarkup.DEFINITION_END +
+              DocumentationMarkup.CONTENT_START +
+              HtmlElement.PreStart +
+              mkString(content) +
+              HtmlElement.PreEnd +
+              DocumentationMarkup.CONTENT_END
+          )
+        }
+      )
   }
 
   private def isHoogleFeatureAvailable(project: Project): Boolean = {
     if (!StackProjectManager.isHoogleAvailable(project)) {
-      HaskellNotificationGroup.logWarningBalloonEvent(project, s"$HoogleName is not yet available")
-      false
-    } else if (!doesHoogleDatabaseExist(project)) {
-      showHoogleDatabaseDoesNotExistNotification(project)
+      HaskellNotificationGroup.logInfoEvent(project, s"$HoogleName is not (yet) available")
       false
     } else {
-      true
+      doesHoogleDatabaseExist(project)
     }
   }
 
-  def rebuildHoogle(project: Project, progressIndicator: ProgressIndicator): Option[Boolean] = {
-    StackCommandLine.executeInMessageView(project, Seq(HoogleName, "--rebuild", "--test", "--no-run-tests"), Some(progressIndicator))
+  def rebuildHoogle(project: Project): Unit = {
+    val buildHaddockOutput = StackCommandLine.executeInMessageView(project, Seq("haddock", "--test", "--bench", "--no-run-tests", "--no-run-benchmarks"))
+    if (buildHaddockOutput.contains(true)) {
+      StackCommandLine.executeInMessageView(project, Seq("exec", "--", HooglePath, "generate", "--local", s"--database=${hoogleDbPath(project)}"))
+    }
   }
 
   def doesHoogleDatabaseExist(project: Project): Boolean = {
-    StackCommandLine.runCommand(project, Seq(HoogleComponent.HoogleName, "--no-setup")) match {
-      case Some(output) if output.getStderr.isEmpty => true
-      case _ => false
-    }
+    new File(hoogleDbPath(project)).exists()
   }
 
   def showHoogleDatabaseDoesNotExistNotification(project: Project): Unit = {
-    HaskellNotificationGroup.logWarningBalloonEvent(project, "Hoogle database does not exist. Hoogle database can be created by menu option `Tools`/`Haskell`/`(Re)Build Hoogle database`")
+    HaskellNotificationGroup.logInfoBalloonEvent(project, "Hoogle database does not exist. Hoogle features can be optionally enabled by menu option `Tools`/`Haskell`/`(Re)Build Hoogle database`")
+  }
+
+  def versionInfo(project: Project): String = {
+    CommandLine.run(Some(project), project.getBasePath, HooglePath, Seq("--version")).getStdout
+  }
+
+  private def runHoogle(project: Project, arguments: Seq[String]): Option[ProcessOutput] = {
+    StackCommandLine.run(project, Seq("exec", "--", HooglePath, s"--database=${hoogleDbPath(project)}") ++ arguments, logOutput = true)
+  }
+
+  private def hoogleDbPath(project: Project) = {
+    Paths.get(project.getBasePath, GlobalInfo.StackWorkDirName, HoogleDbName).toString
   }
 }

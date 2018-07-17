@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ class StackProjectImportProvider(builder: StackProjectImportBuilder) extends Pro
     Array(new HaskellModuleWizardStep(context, HaskellModuleType.getInstance.createModuleBuilder()))
 
   override def canImport(fileOrDirectory: VirtualFile, project: Project): Boolean = {
-    val file = new File(HaskellFileUtil.getAbsoluteFilePath(fileOrDirectory))
+    val file = new File(HaskellFileUtil.getAbsolutePath(fileOrDirectory))
     if (file.isDirectory) {
       file.listFiles().map(_.getName).contains("stack.yaml")
     } else {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package intellij.haskell.external.repl
 import com.intellij.openapi.project.Project
 import intellij.haskell.external.repl.StackRepl.StackReplOutput
 
-class GlobalStackRepl(project: Project, replTimeout: Int) extends StackRepl(project, None, None, Seq("--no-package-hiding"), replTimeout) {
+class GlobalStackRepl(project: Project, replTimeout: Int) extends StackRepl(project, None, Seq("--no-package-hiding"), replTimeout) {
 
   private[this] var loadedModuleName: Option[String] = None
 
@@ -35,6 +35,14 @@ class GlobalStackRepl(project: Project, replTimeout: Int) extends StackRepl(proj
     } else {
       // No info means never info because it's library
       Some(StackReplOutput())
+    }
+  }
+
+  override def restart(forceExit: Boolean): Unit = synchronized {
+    if (available && !starting) {
+      exit(forceExit)
+      loadedModuleName = None
+      start()
     }
   }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package intellij.haskell.action
 
 import com.intellij.openapi.actionSystem.{AnAction, AnActionEvent}
+import com.intellij.openapi.progress.{ProgressIndicator, ProgressManager, Task}
 import intellij.haskell.external.component.StackProjectManager
 import intellij.haskell.module.HaskellModuleBuilder
 import intellij.haskell.util.HaskellEditorUtil
@@ -28,6 +29,13 @@ class DownloadLibrarySources extends AnAction {
   }
 
   override def actionPerformed(actionEvent: AnActionEvent): Unit = {
-    Option(actionEvent.getProject).foreach(HaskellModuleBuilder.addLibrarySources)
+    Option(actionEvent.getProject).foreach(project => {
+      ProgressManager.getInstance().run(new Task.Backgroundable(project, "Downloading Haskell library sources and adding them as source libraries to module") {
+
+        def run(progressIndicator: ProgressIndicator) {
+          HaskellModuleBuilder.addLibrarySources(project, update = true)
+        }
+      })
+    })
   }
 }

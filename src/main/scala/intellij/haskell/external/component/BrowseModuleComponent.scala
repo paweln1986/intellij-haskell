@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,163 +16,147 @@
 
 package intellij.haskell.external.component
 
-import java.util.concurrent.Executors
-
-import com.google.common.cache.{CacheBuilder, CacheLoader}
-import com.google.common.util.concurrent.{ListenableFuture, ListenableFutureTask, UncheckedExecutionException}
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.progress.ProcessCanceledException
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Computable
+import com.github.blemale.scaffeine.{AsyncLoadingCache, Scaffeine}
+import com.intellij.openapi.project.{IndexNotReadyException, Project}
 import com.intellij.psi.PsiFile
-import com.intellij.psi.search.GlobalSearchScopesCore
-import intellij.haskell.HaskellFile
-import intellij.haskell.external.repl.ProjectStackRepl.Failed
+import com.intellij.psi.search.GlobalSearchScope
 import intellij.haskell.external.repl._
-import intellij.haskell.util.StringUtil
 import intellij.haskell.util.index.HaskellModuleNameIndex
+import intellij.haskell.util.{ApplicationUtil, StringUtil}
 
-import scala.collection.JavaConverters._
+import scala.concurrent.{ExecutionContext, Future}
 
 private[component] object BrowseModuleComponent {
 
-  private case class Key(project: Project, moduleName: String, psiFile: Option[PsiFile])
+  private case class Key(project: Project, moduleName: String, psiFile: Option[PsiFile], exported: Boolean)
 
-  private val executor = Executors.newCachedThreadPool()
+  type BrowseModuleResult = Iterable[ModuleIdentifier]
+  private type BrowseModuleInternalResult = Either[NoInfo, Iterable[ModuleIdentifier]]
 
-  private final val Cache = CacheBuilder.newBuilder()
-    .build(
-      new CacheLoader[Key, Either[NoBrowseInfo, Iterable[ModuleIdentifier]]]() {
+  private final val Cache: AsyncLoadingCache[Key, BrowseModuleInternalResult] = Scaffeine().buildAsync((k: Key) => {
+    if (k.project.isDisposed) {
+      Left(NoInfoAvailable)
+    } else {
+      findModuleIdentifiers(k)
+    }
+  })
 
-        override def load(key: Key): Either[NoBrowseInfo, Iterable[ModuleIdentifier]] = {
-          findModuleIdentifiers(key, reload = false)
-        }
+  def findModuleIdentifiers(project: Project, moduleName: String, psiFile: Option[PsiFile])(implicit ec: ExecutionContext): Future[Iterable[ModuleIdentifier]] = {
 
-        override def reload(key: Key, oldValue: Either[NoBrowseInfo, Iterable[ModuleIdentifier]]): ListenableFuture[Either[NoBrowseInfo, Iterable[ModuleIdentifier]]] = {
-          val task = ListenableFutureTask.create[Either[NoBrowseInfo, Iterable[ModuleIdentifier]]](() => {
-            findModuleIdentifiers(key, reload = true)
-          })
-          executor.execute(task)
-          task
-        }
-
-        private def findModuleIdentifiers(key: Key, reload: Boolean): Either[NoBrowseInfo, Iterable[ModuleIdentifier]] = {
-          val project = key.project
-          val moduleName = key.moduleName
-
-          key.psiFile match {
-            case Some(psiFile) =>
-              if (!reload && LoadComponent.isBusy(psiFile)) {
-                Left(ReplIsLoading)
-              } else if (LoadComponent.isLoaded(psiFile).exists(_ != Failed)) {
-                StackReplsManager.getProjectRepl(psiFile).flatMap(_.getLocalModuleIdentifiers(moduleName, psiFile)).map { output =>
-                  Right(output.stdoutLines.takeWhile(l => !l.startsWith("-- imported via")).flatMap(l => findModuleIdentifiers(project, l, moduleName)))
-                }.getOrElse(Left(NoBrowseInfoAvailable))
-              } else {
-                Left(NoBrowseInfoAvailable)
-              }
-            case None =>
-              val projectHaskellFiles =
-                ApplicationManager.getApplication.runReadAction(new Computable[Iterable[HaskellFile]] {
-                  override def compute(): Iterable[HaskellFile] = {
-                    if (!project.isDisposed) {
-                      val productionFile = HaskellModuleNameIndex.findHaskellFileByModuleName(project, moduleName, GlobalSearchScopesCore.projectProductionScope(project))
-                      if (productionFile.isEmpty) {
-                        HaskellModuleNameIndex.findHaskellFileByModuleName(project, moduleName, GlobalSearchScopesCore.projectTestScope(project))
-                      } else {
-                        productionFile
-                      }
-                    } else {
-                      Iterable()
-                    }
-                  }
-                })
-
-              if (projectHaskellFiles.nonEmpty) {
-                val output = projectHaskellFiles.headOption.flatMap(f => StackReplsManager.getProjectRepl(f).flatMap(_.getModuleIdentifiers(moduleName, f)))
-                output match {
-                  case Some(o) if o.stderrLines.isEmpty => output.map(_.stdoutLines.flatMap(l => findModuleIdentifiers(project, l, moduleName))) match {
-                    case Some(ids) => Right(ids)
-                    case None => Left(NoBrowseInfoAvailable)
-                  }
-                  case _ => Left(NoBrowseInfoAvailable)
-                }
-              } else {
-                val moduleIdentifiers = StackReplsManager.getGlobalRepl(project).flatMap(_.getModuleIdentifiers(moduleName).filter(_.stdoutLines.nonEmpty).
-                  map(_.stdoutLines.flatMap(l => findModuleIdentifiers(project, l, moduleName))))
-                moduleIdentifiers match {
-                  case Some(ids) => Right(ids)
-                  case None => Left(NoBrowseInfoAvailable)
-                }
-              }
+    def findKey = {
+      psiFile match {
+        case None =>
+          val projectPsiFile = try {
+            Right(ApplicationUtil.runReadAction(HaskellModuleNameIndex.findHaskellFileByModuleName(project, moduleName, GlobalSearchScope.projectScope(project))))
+          } catch {
+            case _: IndexNotReadyException => Left("Indices not ready")
           }
-        }
-
-        // This kind of declarations are returned in case DuplicateRecordFields are enabled
-        private final val Module$SelPattern = """([\w\.\-]+)\.\$sel:(.+)""".r
-
-        private def findModuleIdentifiers(project: Project, declarationLine: String, moduleName: String): Option[ModuleIdentifier] = {
-          declarationLine match {
-            case Module$SelPattern(mn, declaration) => DeclarationLineUtil.findName(declaration).map(nd => createModuleIdentifier(nd.name, mn, nd.declaration))
-            case _ => DeclarationLineUtil.findName(declarationLine) map (nd => createModuleIdentifier(nd.name, moduleName, nd.declaration))
+          projectPsiFile match {
+            case Right(pf) => Some(Key(project, moduleName, pf, exported = true))
+            case Left(_) => None
           }
-        }
-
-        private def createModuleIdentifier(name: String, moduleName: String, declaration: String) = {
-          ModuleIdentifier(StringUtil.removeOuterParens(name), moduleName, declaration, isOperator = DeclarationLineUtil.isOperator(name))
-        }
-      }
-    )
-
-  def findModuleIdentifiers(project: Project, moduleName: String, psiFile: Option[PsiFile]): Iterable[ModuleIdentifier] = {
-    try {
-      val key = Key(project, moduleName, psiFile)
-      Cache.get(key) match {
-        case Right(ids) => ids
-        case Left(NoBrowseInfoAvailable) =>
-          Cache.invalidate(key)
-          Iterable()
-        case Left(ReplIsLoading) =>
-          Cache.refresh(key)
-          Iterable()
+        case pf@Some(_) => Some(Key(project, moduleName, pf, exported = false))
       }
     }
-    catch {
-      case _: UncheckedExecutionException => Iterable()
-      case _: ProcessCanceledException => Iterable()
+
+    findKey match {
+      case Some(key) =>
+
+        def matchResult(result: Future[BrowseModuleInternalResult]) = {
+          concurrent.blocking(result.map {
+            case Right(ids) => ids
+            case Left(NoInfoAvailable) =>
+              Iterable()
+            case Left(ReplNotAvailable) | Left(ReplIsBusy) | Left(IndexNotReady) =>
+              Cache.synchronous().invalidate(key)
+              Iterable()
+          })
+        }
+
+        key.psiFile match {
+          case None => matchResult(Cache.get(key))
+          case Some(pf) =>
+            if (!key.exported && LoadComponent.isFileLoaded(pf)) {
+              matchResult(Cache.get(key))
+            } else if (key.exported && LoadComponent.isModuleLoaded(Some(moduleName), pf)) {
+              matchResult(Cache.get(key))
+            } else {
+              Future.successful(Iterable())
+            }
+        }
+      case None => Future.successful(Iterable())
     }
   }
 
   def findModuleNamesInCache(project: Project): Iterable[String] = {
-    Cache.asMap().asScala.filter(_._1.project == project).map(_._1.moduleName)
+    Cache.synchronous().asMap().filter(_._1.project == project).map(_._1.moduleName)
   }
 
-  def invalidateTopLevel(project: Project, psiFile: PsiFile): Unit = {
-    val keys = Cache.asMap().keySet().asScala.filter(k => k.project == project && k.psiFile.contains(psiFile))
-    keys.foreach(k => Cache.invalidate(k))
+  def refreshTopLevel(project: Project, moduleName: String, psiFile: PsiFile): Unit = {
+    val key = Key(project, moduleName, Some(psiFile), exported = false)
+    Cache.synchronous().refresh(key)
   }
 
-  def refreshTopLevel(project: Project, psiFile: PsiFile): Unit = {
-    val keys = Cache.asMap().keySet().asScala.filter(k => k.project == project && k.psiFile.contains(psiFile))
-    keys.foreach(k => Cache.refresh(k))
-  }
-
-  def invalidateForModuleName(project: Project, moduleName: String): Unit = {
-    val keys = Cache.asMap().keySet().asScala.filter(k => k.project == project && k.moduleName == moduleName && k.psiFile.isEmpty)
-    keys.foreach(k => Cache.invalidate(k))
+  def invalidateForModuleName(project: Project, moduleName: String, psiFile: PsiFile): Unit = {
+    val key = Key(project, moduleName, Some(psiFile), exported = true)
+    Cache.synchronous.invalidate(key)
   }
 
   def invalidate(project: Project): Unit = {
-    val keys = Cache.asMap().asScala.keys.filter(k => k.project == project)
-    keys.foreach(k => Cache.invalidate(k))
+    val keys = Cache.synchronous().asMap().keys.filter(_.project == project)
+    Cache.synchronous.invalidateAll(keys)
   }
 
-  private sealed trait NoBrowseInfo
+  private def findModuleIdentifiers(key: Key): BrowseModuleInternalResult = {
+    val project = key.project
+    val moduleName = key.moduleName
 
-  private object ReplIsLoading extends NoBrowseInfo
+    key.psiFile match {
+      case Some(psiFile) if !key.exported =>
+        if (LoadComponent.isBusy(psiFile)) {
+          Left(ReplIsBusy)
+        } else if (LoadComponent.isFileLoaded(psiFile)) {
+          StackReplsManager.getProjectRepl(psiFile).flatMap(_.getLocalModuleIdentifiers(moduleName, psiFile)).map { output =>
+            Right(output.stdoutLines.takeWhile(l => !l.startsWith("-- imported via")).flatMap(l => findModuleIdentifiers(project, l, moduleName)))
+          }.getOrElse(Left(ReplNotAvailable))
+        } else {
+          Left(NoInfoAvailable)
+        }
+      case Some(psiFile) if key.exported =>
+        val output = StackReplsManager.getProjectRepl(psiFile).flatMap(_.getModuleIdentifiers(moduleName, psiFile))
+        output match {
+          case Some(o) if o.stderrLines.isEmpty => output.map(_.stdoutLines.flatMap(l => findModuleIdentifiers(project, l, moduleName))) match {
+            case Some(ids) => Right(ids)
+            case None => Left(NoInfoAvailable)
+          }
+          case _ => Left(ReplNotAvailable)
+        }
+      case None => findLibraryModuleIdentifiers(project, moduleName)
+    }
+  }
 
-  private object NoBrowseInfoAvailable extends NoBrowseInfo
+  private def findLibraryModuleIdentifiers(project: Project, moduleName: String): Either[NoInfo, Seq[ModuleIdentifier]] = {
+    StackReplsManager.getGlobalRepl(project).flatMap(_.getModuleIdentifiers(moduleName)) match {
+      case None => Left(ReplNotAvailable)
+      case Some(o) if o.stdoutLines.nonEmpty => Right(o.stdoutLines.flatMap(l => findModuleIdentifiers(project, l, moduleName).toSeq))
+      case _ => Left(NoInfoAvailable)
+    }
+  }
 
+  // This kind of declarations are returned in case DuplicateRecordFields are enabled
+  private final val Module$SelPattern =
+    """([\w\.\-]+)\.\$sel:(.+)""".r
+
+  private def findModuleIdentifiers(project: Project, declarationLine: String, moduleName: String): Option[ModuleIdentifier] = {
+    declarationLine match {
+      case Module$SelPattern(mn, declaration) => DeclarationLineUtil.findName(declaration).map(nd => createModuleIdentifier(nd.name, mn, nd.declaration))
+      case _ => DeclarationLineUtil.findName(declarationLine) map (nd => createModuleIdentifier(nd.name, moduleName, nd.declaration))
+    }
+  }
+
+  private def createModuleIdentifier(name: String, moduleName: String, declaration: String) = {
+    ModuleIdentifier(StringUtil.removeOuterParens(name), moduleName, declaration, isOperator = DeclarationLineUtil.isOperator(name))
+  }
 }
 
 case class ModuleIdentifier(name: String, moduleName: String, declaration: String, isOperator: Boolean)

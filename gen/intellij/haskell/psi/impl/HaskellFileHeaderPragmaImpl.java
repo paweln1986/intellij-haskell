@@ -1,14 +1,15 @@
 // This is a generated file. Not intended for manual editing.
 package intellij.haskell.psi.impl;
 
-import java.util.List;
-import org.jetbrains.annotations.*;
 import com.intellij.lang.ASTNode;
-import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiElementVisitor;
 import com.intellij.psi.util.PsiTreeUtil;
-import static intellij.haskell.psi.HaskellTypes.*;
-import intellij.haskell.psi.*;
+import intellij.haskell.psi.HaskellFileHeaderPragma;
+import intellij.haskell.psi.HaskellGeneralPragmaContent;
+import intellij.haskell.psi.HaskellVisitor;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.List;
 
 public class HaskellFileHeaderPragmaImpl extends HaskellCompositeElementImpl implements HaskellFileHeaderPragma {
 
@@ -26,39 +27,9 @@ public class HaskellFileHeaderPragmaImpl extends HaskellCompositeElementImpl imp
   }
 
   @Override
-  @Nullable
-  public HaskellAnnPragma getAnnPragma() {
-    return PsiTreeUtil.getChildOfType(this, HaskellAnnPragma.class);
-  }
-
-  @Override
-  @Nullable
-  public HaskellDummyPragma getDummyPragma() {
-    return PsiTreeUtil.getChildOfType(this, HaskellDummyPragma.class);
-  }
-
-  @Override
-  @Nullable
-  public HaskellHaddockPragma getHaddockPragma() {
-    return PsiTreeUtil.getChildOfType(this, HaskellHaddockPragma.class);
-  }
-
-  @Override
-  @Nullable
-  public HaskellIncludePragma getIncludePragma() {
-    return PsiTreeUtil.getChildOfType(this, HaskellIncludePragma.class);
-  }
-
-  @Override
-  @Nullable
-  public HaskellLanguagePragma getLanguagePragma() {
-    return PsiTreeUtil.getChildOfType(this, HaskellLanguagePragma.class);
-  }
-
-  @Override
-  @Nullable
-  public HaskellOptionsGhcPragma getOptionsGhcPragma() {
-    return PsiTreeUtil.getChildOfType(this, HaskellOptionsGhcPragma.class);
+  @NotNull
+  public List<HaskellGeneralPragmaContent> getGeneralPragmaContentList() {
+    return PsiTreeUtil.getChildrenOfTypeAsList(this, HaskellGeneralPragmaContent.class);
   }
 
 }

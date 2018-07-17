@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 Rik van der Kleij
+ * Copyright 2014-2018 Rik van der Kleij
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,26 +19,30 @@ package intellij.haskell.refactor
 import com.intellij.psi.{PsiElement, PsiFile}
 import com.intellij.refactoring.listeners.RefactoringElementListener
 import com.intellij.refactoring.rename.RenamePsiElementProcessor
-import com.intellij.usageView.UsageInfo
-import intellij.haskell.util.{HaskellFileUtil, HaskellProjectUtil}
+import intellij.haskell.util.{HaskellFileUtil, HaskellProjectUtil, ScalaUtil}
 
 class HaskellRenameVariableProcessor extends RenamePsiElementProcessor {
 
   override def canProcessElement(psiElement: PsiElement): Boolean = {
-    HaskellProjectUtil.isHaskellProject(psiElement.getProject) &&
-      (psiElement match {
-        case psiFile: PsiFile => HaskellProjectUtil.isProjectFile(psiFile).getOrElse(false)
-        case _ => Option(psiElement.getReference).map(_.getElement) match {
-          case Some(e: PsiElement) => HaskellProjectUtil.isProjectFile(e.getContainingFile).getOrElse(false)
-          case _ => false
-        }
-      })
+    val project = psiElement.getProject
+    Option(psiElement.getContainingFile).exists { psiFile =>
+      HaskellProjectUtil.isHaskellProject(project) &&
+        (psiElement match {
+          case psiFile: PsiFile => HaskellProjectUtil.isProjectFile(psiFile)
+          case _ =>
+            Option(psiElement.getReference).map(_.getElement) match {
+              case Some(e: PsiElement) => HaskellProjectUtil.isProjectFile(psiFile)
+              case _ => false
+            }
+        })
+    }
   }
 
-  override def renameElement(psiElement: PsiElement, newName: String, usages: Array[UsageInfo], listener: RefactoringElementListener): Unit = {
-    super.renameElement(psiElement, newName, usages, listener)
-    val project = psiElement.getProject
-
-    HaskellFileUtil.saveAllFiles(project, psiElement.getContainingFile.getOriginalFile)
+  override def getPostRenameCallback(element: PsiElement, newName: String, elementListener: RefactoringElementListener): Runnable = {
+    ScalaUtil.runnable {
+      val psiFile = element.getContainingFile.getOriginalFile
+      val project = element.getProject
+      HaskellFileUtil.saveAllFiles(project, psiFile)
+    }
   }
 }

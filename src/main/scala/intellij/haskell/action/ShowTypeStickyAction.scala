@@ -22,8 +22,9 @@ class ShowTypeStickyAction extends AnAction {
 
       actionContext.selectionModel match {
         case Some(sm) => HaskellComponentsManager.findTypeInfoForSelection(psiFile, sm) match {
-          case Some(ti) => HaskellEditorUtil.showHint(editor, StringUtil.escapeString(ti.typeSignature), sticky = true)
-          case None => HaskellEditorUtil.showHint(editor, "Could not determine type for selection")
+          case Right(info) => HaskellEditorUtil.showHint(editor, StringUtil.escapeString(info.typeSignature), sticky = true)
+          case Left(info) => HaskellEditorUtil.showHint(editor, info.message)
+          case _ => HaskellEditorUtil.showHint(editor, "Could not determine type for selection")
         }
         case _ =>
           for {
@@ -32,7 +33,7 @@ class ShowTypeStickyAction extends AnAction {
               untilNameElementBackwards(Some(PsiTreeUtil.getDeepestLast(psiElement)))
             }
           } yield {
-            ShowTypeAction.showTypeHint(actionContext.project, editor, namedElement, psiFile, sticky = true)
+            ShowTypeAction.showTypeAsHint(actionContext.project, editor, namedElement, psiFile, sticky = true)
           }
       }
     })
